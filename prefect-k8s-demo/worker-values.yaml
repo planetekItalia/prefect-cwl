@@ -1,0 +1,7 @@
+worker:
+  apiConfig: selfHostedServer
+  config:
+    workPool: local-k8s
+  selfHostedServerApiConfig:
+    apiUrl: http://prefect-server.prefect.svc.cluster.local:4200/api
+

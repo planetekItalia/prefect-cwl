@@ -1,0 +1,15 @@
+val_int: 1
+val_int_a:
+  - 3
+  - 5
+  - 7
+val_flt: 3.6
+val_flt_a:
+  - 0.4
+  - .4
+  - 26.8
+val_str: "Test sentence"
+val_str_a:
+  - "String one"
+  - "String two"
+  - "String three"

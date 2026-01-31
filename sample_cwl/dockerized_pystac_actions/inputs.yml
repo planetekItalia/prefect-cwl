@@ -1,0 +1,9 @@
+downloader_catalog_url: 'https://planetarycomputer.microsoft.com/api/stac/v1'
+downloader_collection_name: 'io-lulc-annual-v02'
+downloader_date_start: '2023-10-01T00:00:00Z'
+downloader_date_end: '2023-11-01T00:00:00Z'
+downloader_bbox:
+  - 16.786594
+  - 41.077410
+  - 16.935425
+  - 41.141692

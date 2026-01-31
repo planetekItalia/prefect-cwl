@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.idea
+/prefect-k8s-demo/prefect-demo-kubeconfig
+/prefect-k8s-demo/.prefectignore
+/prefect-k8s-demo/deploy.py
+/prefect-k8s-demo/Dockerfile
+/prefect-k8s-demo/hello_flow.py
+/prefect-k8s-demo/local-k8s.json
+/prefect-k8s-demo/local-k8s-updated.json
+/prefect-k8s-demo/prefect.yaml
+/sample_cwl/ndvi/processor/
