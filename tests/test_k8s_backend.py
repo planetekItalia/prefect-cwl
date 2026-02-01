@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -41,24 +42,30 @@ async def test_k8s_backend_success(tmp_path, monkeypatch):
 
     submitted = []
 
+    class FakeJobRun:
+        def __init__(self, result=None):
+            self.wait_for_completion = AsyncMock()
+            self.fetch_result = AsyncMock(return_value=result)
+
     class FakeK8sJob:
-        def __init__(self, namespace, v1_job):  # type: ignore[no-untyped-def]
+        def __init__(self, namespace, v1_job):
             self.namespace = namespace
             self.v1_job = v1_job
+            self._job_run = FakeJobRun(result={"ok": True})
 
-    def fake_run_namespaced_job_fn(*, kubernetes_job, print_func):  # type: ignore[no-untyped-def]
-        submitted.append(kubernetes_job.v1_job)
-        # emit some logs
-        print_func("log line")
+        async def trigger(self):
+            submitted.append(self.v1_job)
+            return self._job_run
 
     # Patch the Kubernetes objects
     monkeypatch.setattr("prefect_cwl.backends.k8s.KubernetesJob", FakeK8sJob)
-    monkeypatch.setattr("prefect_cwl.backends.k8s.run_namespaced_job.fn", fake_run_namespaced_job_fn)
 
     backend = K8sBackend(namespace="ns", pvc_name="pvc", pvc_mount_path=pvc_root)
 
     produced = {}
-    await backend.call_single_step(step, workflow_inputs={}, produced=produced, workspace=tmp_path)
+    await backend.call_single_step(
+        step, workflow_inputs={}, produced=produced, workspace=tmp_path
+    )
 
     # Expect up to three jobs (mkdir, listings, run). mkdir may be skipped if dirs empty, but here not empty
     assert len(submitted) == 3
@@ -80,6 +87,7 @@ async def test_k8s_backend_success(tmp_path, monkeypatch):
     mounts = container["volumeMounts"]
     # base mount at pvc root
     assert any(m.get("mountPath") == pvc_root for m in mounts)
+
     # extra mounts include /out and /cwl_job mapped with subPaths from pvc_root
     # Compute expected subpaths
     def sp(p):
@@ -113,18 +121,28 @@ async def test_k8s_backend_failure_raises(tmp_path, monkeypatch):
     )
     step = DummyStepTemplate("s", plan)
 
+    class FakeJobRun:
+        def __init__(self, result=None):
+            self.wait_for_completion = AsyncMock()
+            self.fetch_result = AsyncMock(return_value=result)
+
     class FakeK8sJob:
-        def __init__(self, namespace, v1_job):  # type: ignore[no-untyped-def]
+        def __init__(self, namespace, v1_job):
             self.namespace = namespace
             self.v1_job = v1_job
+            self._job_run = FakeJobRun(result={"ok": True})
+
+        async def trigger(self):
+            raise RuntimeError("job failed")
 
     def fake_run_namespaced_job_fn(*, kubernetes_job, print_func):  # type: ignore[no-untyped-def]
         raise RuntimeError("job failed")
 
     monkeypatch.setattr("prefect_cwl.backends.k8s.KubernetesJob", FakeK8sJob)
-    monkeypatch.setattr("prefect_cwl.backends.k8s.run_namespaced_job.fn", fake_run_namespaced_job_fn)
 
     backend = K8sBackend(namespace="ns", pvc_name="pvc", pvc_mount_path=pvc_root)
 
     with pytest.raises(RuntimeError):
-        await backend.call_single_step(step, workflow_inputs={}, produced={}, workspace=tmp_path)
+        await backend.call_single_step(
+            step, workflow_inputs={}, produced={}, workspace=tmp_path
+        )
