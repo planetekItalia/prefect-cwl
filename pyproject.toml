@@ -23,6 +23,7 @@ dev = [
     "cwltool>=3.1.20260108082145",
     "ruff>=0.14.14",
     "towncrier>=25.8.0",
+    "pydocstyle>=6.3.0",
 ]
 
 [project.optional-dependencies]
@@ -50,4 +51,3 @@ members = [
     "sample_cwl",
     "removeme",
 ]
-
