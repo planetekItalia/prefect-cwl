@@ -1,16 +1,43 @@
-"""Utilities to build and run Prefect flows from CWL definitions.
+from __future__ import annotations
 
-This package provides parsers, models, and execution backends (e.g., Docker,
-Kubernetes) to translate CWL documents into executable Prefect flows.
-"""
 from pathlib import Path
+from typing import Awaitable, Callable, Dict, Any
 
-from prefect import Flow
+from prefect import Flow, flow
 
 from prefect_cwl.backends.base import Backend
-
 from prefect_cwl.flow_builder import PrefectFlowBuilder
 from prefect_cwl.planner.planner import Planner
+
+
+# --------------------------
+# Internal helpers
+# --------------------------
+
+
+def _prepare_plan(workflow_text: str, host_work_dir: Path, workflow_id: str):
+    """Parse + plan CWL into a WorkflowTemplate/plan object."""
+    return Planner(
+        workflow_text,
+        workspace_root=host_work_dir,
+    ).prepare(workflow_ref=workflow_id)
+
+
+def _create_executor_with_backend(
+    workflow_text: str,
+    host_work_dir: Path,
+    workflow_id: str,
+    backend: Backend,
+) -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Create a deploy-safe executor callable using a custom backend.
+
+    Returns an async callable that can be awaited inside a top-level @flow.
+    """
+    workflow_plan = _prepare_plan(workflow_text, host_work_dir, workflow_id)
+
+    f_builder = PrefectFlowBuilder()
+    return f_builder.build_executor(workflow_plan, backend)
+
 
 def _create_flow_with_backend(
     workflow_text: str,
@@ -18,24 +45,59 @@ def _create_flow_with_backend(
     workflow_id: str,
     backend: Backend,
 ) -> Flow:
-    """Create flow with custom backend.
+    """Backward-compatible: create a Prefect Flow object (dynamic / closure)."""
+    workflow_plan = _prepare_plan(workflow_text, host_work_dir, workflow_id)
 
-    Args:
-        workflow_text: CWL document content.
-        host_work_dir: Host workspace directory used for planning and mounts.
-        workflow_id: CWL workflow reference (e.g., "#main").
-        backend: Execution backend (Docker, Kubernetes, etc.).
+    f_builder = PrefectFlowBuilder()
+    return f_builder.build(workflow_plan, backend)
 
-    Returns:
-        A Prefect Flow object ready to run.
-    """
-    workflow_plan = Planner(
+
+def _wrap_executor_as_flow(
+    workflow_id: str,
+    executor: Callable[..., Awaitable[Dict[str, Any]]],
+) -> Flow:
+    """Wrap an executor into a Flow for convenience local usage."""
+
+    @flow(name=workflow_id)
+    async def _dynamic_flow(**kwargs: Any):
+        return await executor(**kwargs)
+
+    # If builder set execute.__signature__, copy it so the UI signature stays nice
+    sig = getattr(executor, "__signature__", None)
+    if sig is not None:
+        _dynamic_flow.fn.__signature__ = sig  # type: ignore[attr-defined]
+
+    return _dynamic_flow
+
+
+# --------------------------
+# Public API: Docker
+# --------------------------
+
+
+def create_executor_with_docker_backend(
+    workflow_text: str,
+    host_work_dir: Path,
+    workflow_id: str,
+) -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Create a deploy-safe executor that executes steps on Docker."""
+    try:
+        from prefect_cwl.backends.docker import DockerBackend
+    except ImportError as e:
+        raise ImportError(
+            "Docker backend is not installed.\n"
+            "Install it with:\n\n"
+            "  pip install prefect-cwl[docker]\n"
+            "  # or\n"
+            "  uv add prefect-cwl[docker]"
+        ) from e
+
+    return _create_executor_with_backend(
         workflow_text,
-        workspace_root=host_work_dir,
-    ).prepare(workflow_ref=workflow_id)
-
-    flow_builder = PrefectFlowBuilder()
-    return flow_builder.build(workflow_plan, backend)
+        host_work_dir,
+        workflow_id,
+        DockerBackend(),
+    )
 
 
 def create_flow_with_docker_backend(
@@ -43,9 +105,10 @@ def create_flow_with_docker_backend(
     host_work_dir: Path,
     workflow_id: str,
 ) -> Flow:
-    """Create a Prefect flow that executes steps on Docker.
+    """Create a Prefect Flow that executes steps on Docker (dynamic flow).
 
-    See _create_flow_with_backend for parameter details.
+    Good for local runs; for deployments prefer create_executor_with_docker_backend
+    inside a stable top-level @flow.
     """
     try:
         from prefect_cwl.backends.docker import DockerBackend
@@ -58,6 +121,7 @@ def create_flow_with_docker_backend(
             "  uv add prefect-cwl[docker]"
         ) from e
 
+    # Option A: keep exact legacy behavior
     return _create_flow_with_backend(
         workflow_text,
         host_work_dir,
@@ -65,12 +129,22 @@ def create_flow_with_docker_backend(
         DockerBackend(),
     )
 
+    # Option B: implement create_flow via executor wrapper instead (also OK):
+    # executor = create_executor_with_docker_backend(workflow_text, host_work_dir, workflow_id)
+    # return _wrap_executor_as_flow(workflow_id, executor)
 
-def create_flow_with_k8s_backend(
+
+# --------------------------
+# Public API: Kubernetes
+# --------------------------
+
+
+def create_executor_with_k8s_backend(
     workflow_text: str,
     host_work_dir: Path,
     workflow_id: str,
-) -> Flow:
+) -> Callable[..., Awaitable[Dict[str, Any]]]:
+    """Create a deploy-safe executor that executes steps on Kubernetes."""
     try:
         from prefect_cwl.backends.k8s import K8sBackend
     except ImportError as e:
@@ -82,9 +156,43 @@ def create_flow_with_k8s_backend(
             "  uv add prefect-cwl[k8s]"
         ) from e
 
+    return _create_executor_with_backend(
+        workflow_text,
+        host_work_dir,
+        workflow_id,
+        K8sBackend(),
+    )
+
+
+def create_flow_with_k8s_backend(
+    workflow_text: str,
+    host_work_dir: Path,
+    workflow_id: str,
+) -> Flow:
+    """Create a Prefect Flow that executes steps on Kubernetes (dynamic flow).
+
+    Good for local runs; for deployments prefer create_executor_with_k8s_backend
+    inside a stable top-level @flow.
+    """
+    try:
+        from prefect_cwl.backends.k8s import K8sBackend
+    except ImportError as e:
+        raise ImportError(
+            "Kubernetes backend is not installed.\n"
+            "Install it with:\n\n"
+            "  pip install prefect-cwl[k8s]\n"
+            "  # or\n"
+            "  uv add prefect-cwl[k8s]"
+        ) from e
+
+    # Option A: keep exact legacy behavior
     return _create_flow_with_backend(
         workflow_text,
         host_work_dir,
         workflow_id,
         K8sBackend(),
     )
+
+    # Option B: implement create_flow via executor wrapper instead (also OK):
+    # executor = create_executor_with_k8s_backend(workflow_text, host_work_dir, workflow_id)
+    # return _wrap_executor_as_flow(workflow_id, executor)
