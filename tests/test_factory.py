@@ -1,7 +1,6 @@
 import builtins
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -91,11 +90,7 @@ async def test_create_flow_with_docker_backend_wraps_executor(
     class FakeDockerBackend:
         pass
 
-    # Provide a fake module prefect_cwl.backends.docker with DockerBackend
-    fake_docker_module = SimpleNamespace(DockerBackend=FakeDockerBackend)
-    monkeypatch.setitem(
-        __import__("sys").modules, "prefect_cwl.backends.docker", fake_docker_module
-    )
+    monkeypatch.setattr(factory, "find_spec", lambda name: object())
 
     # Make executor factory return an executor we control
     executor = AsyncMock(return_value={"done": True})
@@ -139,10 +134,7 @@ async def test_create_flow_with_k8s_backend_wraps_executor(monkeypatch, tmp_path
     class FakeK8sBackend:
         pass
 
-    fake_k8s_module = SimpleNamespace(K8sBackend=FakeK8sBackend)
-    monkeypatch.setitem(
-        __import__("sys").modules, "prefect_cwl.backends.k8s", fake_k8s_module
-    )
+    monkeypatch.setattr(factory, "find_spec", lambda name: object())
 
     executor = AsyncMock(return_value={"done": "k8s"})
     monkeypatch.setattr(
