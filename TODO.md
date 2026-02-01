@@ -17,8 +17,6 @@ for output_name, expected_path in step_plan.out_artifacts.items():
 
 **Benefit:** Catch silent failures early
 
-**Effort:** Low (1-2 days)
-
 #### 1.2 Better Error Messages
 **Goal:** Include step context in all errors
 
@@ -28,8 +26,6 @@ for output_name, expected_path in step_plan.out_artifacts.items():
 - Suggest common fixes (missing permissions, wrong paths)
 
 **Benefit:** Faster debugging
-
-**Effort:** Medium (3-5 days)
 
 #### 1.3 Workspace Cleanup
 **Goal:** Automatic cleanup of old workspaces
@@ -45,6 +41,13 @@ class WorkspaceManager:
 **Benefit:** Prevent disk space exhaustion
 
 **Effort:** Low (2-3 days)
+
+#### 1.4 Prefect JOB template
+**Goal:** Reuse Prefect JOB template for all backends, merging it when spawning jobs or templates
+
+
+**Benefit:** Reuse existing infrastructure
+
 
 ### Priority 2: Performance & Optimization (Q2 2026)
 
@@ -62,8 +65,6 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Benefit:** Reduce overhead from ~3s to ~1s per step
 
-**Effort:** Low (1 day)
-
 #### 2.2 File Type Support
 **Goal:** Robust File type passing between steps
 
@@ -74,8 +75,6 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Benefit:** More CWL compatibility
 
-**Effort:** Medium (5-7 days)
-
 #### 2.3 Caching
 **Goal:** Cache unchanged step executions
 
@@ -85,8 +84,6 @@ def _setup_job(self, job_name, dirs, listings):
 - Skip execution if hash matches
 
 **Benefit:** Faster re-runs, cost savings
-
-**Effort:** High (2 weeks)
 
 **Challenges:**
 - Cache invalidation
@@ -105,27 +102,14 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Benefit:** More CWL compatibility
 
-**Effort:** Medium (1 week)
-
-#### 3.2 Workflow-Level File Inputs
-**Goal:** Support File/Directory at workflow level
-
-**Implementation:**
-- Custom Prefect UI input type
-- Upload files to workspace before execution
-- Generate Prefect form with file upload widget
-
-**Benefit:** Better user experience
-
-**Effort:** High (2 weeks)
 
 **Challenges:**
 - Prefect UI customization
 - File upload handling
 - Storage management
 
-#### 3.3 JavaScript Expressions (Limited)
-**Goal:** Support simple `$(...)` expressions
+#### 3.2 JavaScript Expressions (Limited)
+**Goal:** Extends `$(...)` expressions
 
 **Implementation:**
 - Parse and evaluate JavaScript in Python (js2py or similar)
@@ -134,7 +118,6 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Benefit:** More CWL compatibility
 
-**Effort:** High (3 weeks)
 
 **Risks:**
 - Security concerns with code execution
@@ -153,8 +136,6 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Benefit:** Major CWL compatibility improvement
 
-**Effort:** Very High (1 month)
-
 **Challenges:**
 - Complex dependency tracking
 - Result aggregation
@@ -170,8 +151,6 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Benefit:** Modular workflow composition
 
-**Effort:** Very High (1 month)
-
 #### 4.3 Resource Requirements
 **Goal:** Support ResourceRequirement (CPU, memory, disk)
 
@@ -182,8 +161,6 @@ def _setup_job(self, job_name, dirs, listings):
 - K8s: resources.requests/limits
 
 **Benefit:** Better resource management
-
-**Effort:** Medium (1 week)
 
 ### Priority 5: Developer Experience (Ongoing)
 
@@ -197,8 +174,6 @@ def _setup_job(self, job_name, dirs, listings):
 - Backend tests with mocked Docker/K8s
 - End-to-end tests in CI
 
-**Effort:** Ongoing
-
 #### 5.2 Documentation
 **Current:** README + DESIGN
 **Goal:** Full documentation site
@@ -209,8 +184,6 @@ def _setup_job(self, job_name, dirs, listings):
 - Example workflows repository
 - Troubleshooting guide
 
-**Effort:** High (2-3 weeks initial, ongoing maintenance)
-
 #### 5.3 Observability
 **Goal:** Better monitoring and debugging
 
@@ -220,7 +193,6 @@ def _setup_job(self, job_name, dirs, listings):
 - Tracing (OpenTelemetry integration)
 - Prefect UI enhancements (custom artifacts)
 
-**Effort:** Medium (1-2 weeks)
 
 ---
 
