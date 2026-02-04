@@ -1,0 +1,1 @@
+Serving flow as sample reference inside the sample_cwl folder
