@@ -22,8 +22,9 @@ from prefect_cwl.logger import get_logger
 
 
 class K8sBackend(Backend):
-    """
-    Execute StepTemplate using Kubernetes Jobs with a shared PVC mounted at /data.
+    """Execute StepTemplate using Kubernetes Jobs with a shared PVC mounted at JOBROOT.
+
+    Materializes listings to the PVC and create all the required directories via dedicated jobs.
     """
 
     def __init__(
@@ -41,6 +42,16 @@ class K8sBackend(Backend):
         ),
         ttl_seconds_after_finished: int = 3600,
     ) -> None:
+        """Initialize the backend.
+
+        Args:
+            namespace (str, optional): Kubernetes namespace to use. Defaults to "prefect".
+            pvc_name (str, optional): Name of the PVC to use. Defaults to "prefect-shared-pvc".
+            pvc_mount_path (str, optional): Path to mount the PVC at. Defaults to "/data".
+            service_account_name (str, optional): Name of the service account to use. Defaults to "prefect-flow-runner".
+            image_pull_secrets (List[str], optional): List of image pull secrets to use. Defaults to None.
+            ttl_seconds_after_finished (int, optional): TTL for finished jobs. Defaults to 3600.
+        """
         self.namespace = namespace
         self.pvc_name = pvc_name
         self.pvc_mount_path = pvc_mount_path
@@ -52,9 +63,16 @@ class K8sBackend(Backend):
     # Helpers
     # ------------------------
     def _parse_container_spec(self, spec: str) -> tuple[str, bool]:
-        """
+        """Parse a volume spec into a container path, setting up the read-only flag.
+
         spec: "/out:ro" | "/out:rw" | "/out"
         returns: (container_path, read_only)
+
+        Args:
+            spec (str): Volume specification
+
+        Returns:
+            tuple[str, bool]: Container path and read-only flag
         """
         if not isinstance(spec, str) or not spec.strip():
             raise ValueError(f"Invalid volume spec: {spec!r}")
@@ -67,8 +85,10 @@ class K8sBackend(Backend):
         return spec, False
 
     def _to_subpath(self, host_path: str) -> str:
-        """
-        Convert PVC-absolute host path (e.g. '/data/tmp/out') to subPath ('tmp/out').
+        """Convert PVC-absolute host path (e.g. '/data/tmp/out') to subPath ('tmp/out').
+
+        Args:
+            host_path (str): Absolute path on PVC.
         """
         hp = str(host_path).replace("\\", "/")
         root = self.pvc_mount_path.rstrip("/")
@@ -118,7 +138,7 @@ class K8sBackend(Backend):
     # Job builders
     # ------------------------
     def _base_job_manifest(self, job_name: str, container_spec: dict) -> dict:
-        """Base Job manifest with PVC mounted."""
+        """Generate base Job manifest with PVC mounted. Set service account and image pull secrets as well, if provided."""
         volume_name = "work"
 
         mounts = list(container_spec.get("volumeMounts", []))
@@ -203,7 +223,12 @@ class K8sBackend(Backend):
         )
 
     def _step_job(self, job_name: str, step: StepPlan) -> dict:
-        """Main execution job."""
+        """Generate the Kubernetes Job manifest for a step, setting up volumes, environment variables, etc.
+
+        Args:
+            job_name (str): Name for the Kubernetes Job.
+            step (StepPlan): Step to run.
+        """
         volume_name = "work"
         extra_mounts: List[dict] = []
 
