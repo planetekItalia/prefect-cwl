@@ -51,3 +51,7 @@ members = [
     "sample_cwl",
     "removeme",
 ]
+
+[tool.towncrier]
+directory = "newsfragments"
+filename = "CHANGELOG.rst"
