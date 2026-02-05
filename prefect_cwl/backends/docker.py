@@ -3,6 +3,7 @@
 This module implements a Backend that materializes a step plan and runs it in
 Docker, handling volume mounts, environment variables, and streamed logs.
 """
+
 import asyncio
 import os
 import shlex
@@ -20,10 +21,10 @@ from prefect_cwl.io import build_command_and_listing
 from prefect_cwl.logger import get_logger
 
 
-
 class DockerBackend(Backend):
-    """
-    Docker backend that materializes and executes CWL steps.
+    """Docker backend that materializes and executes CWL steps spawning Docker containers.
+
+    If listings are present, they are materialized to the host filesystem and mounted into the container.
     """
 
     # ------------------------
@@ -39,8 +40,8 @@ class DockerBackend(Backend):
 
     @staticmethod
     def _ensure_mount_sources(volumes: Dict[str, str]) -> None:
-        """
-        Ensure host mount sources exist.
+        """Ensure host mount sources exist.
+
         - For directory mounts: create dir
         - For file mounts: create parent dir
         """
@@ -62,7 +63,9 @@ class DockerBackend(Backend):
         out: List[str] = []
         for host, container_spec in (volumes or {}).items():
             if not isinstance(container_spec, str):
-                raise ValidationError(f"Invalid volume spec for {host!r}: {container_spec!r}")
+                raise ValidationError(
+                    f"Invalid volume spec for {host!r}: {container_spec!r}"
+                )
 
             if container_spec.endswith(":ro"):
                 container_path = container_spec[:-3]
@@ -75,7 +78,9 @@ class DockerBackend(Backend):
                 mode = "rw"
 
             if not container_path.startswith("/"):
-                raise ValidationError(f"Container mount path must be absolute: {container_path!r}")
+                raise ValidationError(
+                    f"Container mount path must be absolute: {container_path!r}"
+                )
 
             out.append(f"{host}:{container_path}:{mode}")
         return out
@@ -111,14 +116,13 @@ class DockerBackend(Backend):
     # Backend API
     # ------------------------
     async def call_single_step(
-            self,
-            step_template: StepTemplate,
-            workflow_inputs: Dict[str, Any],
-            produced: Dict[Tuple[str, str], Path],
-            workspace: Path,
+        self,
+        step_template: StepTemplate,
+        workflow_inputs: Dict[str, Any],
+        produced: Dict[Tuple[str, str], Path],
+        workspace: Path,
     ) -> None:
         """Execute a single CWL step."""
-
         logger = get_logger("prefect-cwl")
 
         if step_template is None:
@@ -146,7 +150,7 @@ class DockerBackend(Backend):
         logger.info("Volumes: %s", volume_args)
 
         user = None
-        if hasattr(os, 'getuid'):
+        if hasattr(os, "getuid"):
             user = f"{os.getuid()}:{os.getgid()}"
 
         container = await create_docker_container(

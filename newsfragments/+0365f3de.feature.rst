@@ -1,0 +1,1 @@
+Avoid wrapping execution inside a flow by default, offering different API to get a flow or plain execution plan

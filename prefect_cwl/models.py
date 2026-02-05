@@ -14,30 +14,50 @@ from prefect_cwl.constants import JOBROOT
 
 # ---------------- Requirements (subset) ----------------
 
+
 class DockerRequirement(BaseModel):
     """Docker requirement, mandatory."""
+
     dockerPull: str
     dockerOutputDirectory: PurePosixPath = JOBROOT
 
     @field_validator("dockerOutputDirectory")
     @classmethod
-    def must_be_absolute_posix_path(cls, docker_output_directory: PurePosixPath) -> PurePosixPath:
+    def must_be_absolute_posix_path(
+        cls, docker_output_directory: PurePosixPath
+    ) -> PurePosixPath:
+        """Validate that dockerOutputDirectory is an absolute POSIX path.
+
+        Args:
+            docker_output_directory (PurePosixPath): dockerOutputDirectory string
+        """
         if not docker_output_directory.is_absolute():
-            raise ValidationError(f"dockerOutputDirectory must be absolute; got {docker_output_directory!r}")
+            raise ValidationError(
+                f"dockerOutputDirectory must be absolute; got {docker_output_directory!r}"
+            )
         return docker_output_directory
+
 
 class EnvVarRequirement(BaseModel):
     """Environment variable requirement, optional."""
+
     envDef: Dict[str, str] = Field(default_factory=dict)
+
 
 class Listing(BaseModel):
     """Listing requirement, optional."""
+
     entryname: PurePosixPath
     entry: str
 
     @field_validator("entryname")
     @classmethod
     def must_be_absolute_posix_path(cls, entryname: PurePosixPath) -> PurePosixPath:
+        """Validate that entryname is an absolute POSIX path.
+
+        Args:
+            entryname (PurePosixPath): entryname string
+        """
         # Check if under JOBROOT
         try:
             entryname.relative_to(JOBROOT)
@@ -50,27 +70,30 @@ class Listing(BaseModel):
 
 class InitialWorkDirRequirement(BaseModel):
     """Initial work directory requirement, optional."""
+
     listing: List[Listing] = Field(default_factory=list)
+
 
 class Requirements(BaseModel):
     """CWL Requirements."""
+
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    docker_requirement: DockerRequirement = Field(
-        alias="DockerRequirement"
-    )
+    docker_requirement: DockerRequirement = Field(alias="DockerRequirement")
     env_var_requirement: Optional[EnvVarRequirement] = Field(
         default=EnvVarRequirement(), alias="EnvVarRequirement"
     )
     initial_workdir_requirement: Optional[InitialWorkDirRequirement] = Field(
-        default=InitialWorkDirRequirement(), alias ="InitialWorkDirRequirement"
+        default=InitialWorkDirRequirement(), alias="InitialWorkDirRequirement"
     )
 
 
 # ---------------- Bindings ----------------
 
+
 class InputBinding(BaseModel):
     """Input binding. Position to -1 means no explicit position set (ie: CWL default)."""
+
     position: Optional[int] = -1
     prefix: Optional[str] = None
     separator: Optional[str] = None
@@ -78,19 +101,28 @@ class InputBinding(BaseModel):
 
 class ToolInput(BaseModel):
     """Tool input."""
+
     model_config = ConfigDict(extra="allow")
     type: str
     inputBinding: Optional[InputBinding] = None
 
+
 _GLOB_CHARS = re.compile(r"[*?\[\]{}]")
+
+
 class OutputBinding(BaseModel):
     """Output binding."""
+
     glob: str
 
     @field_validator("glob")
     @classmethod
     def must_be_exact_relative_path(cls, v: str) -> str:
-        """Validate that glob is an exact relative path without wildcards or traversal."""
+        """Validate that glob is an exact relative path without wildcards or traversal.
+
+        Args:
+            v: glob path string
+        """
         v = v.strip()
 
         if not v:
@@ -114,6 +146,7 @@ class OutputBinding(BaseModel):
 
 class ToolOutput(BaseModel):
     """Tool output."""
+
     model_config = ConfigDict(extra="allow")
     type: str
     outputBinding: OutputBinding
@@ -121,14 +154,17 @@ class ToolOutput(BaseModel):
 
 # ---------------- Workflow structures ----------------
 
+
 class WorkflowInput(BaseModel):
     """Workflow input."""
+
     model_config = ConfigDict(extra="allow")
     type: str
 
 
 class WorkflowOutput(BaseModel):
     """Workflow output."""
+
     model_config = ConfigDict(extra="allow")
     type: str
     outputSource: str
@@ -136,6 +172,7 @@ class WorkflowOutput(BaseModel):
 
 class WorkflowStep(BaseModel):
     """Workflow step."""
+
     model_config = ConfigDict(extra="allow", populate_by_name=True)
     run: str
     in_: Dict[str, str] = Field(default_factory=dict, alias="in")
@@ -144,12 +181,12 @@ class WorkflowStep(BaseModel):
     volumes: Dict[str, str] = Field(default_factory=dict)
 
 
-
-
 # ---------------- Graph nodes ----------------
+
 
 class WorkflowNode(BaseModel):
     """Workflow node."""
+
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     kind: Literal["Workflow"] = Field(alias="class")
@@ -162,9 +199,9 @@ class WorkflowNode(BaseModel):
 
     @model_validator(mode="after")
     def enforce_step_run_id_matches_name(self) -> "WorkflowNode":
-        """
-        Enforce that if step.run is an in-document reference like '#X',
-        then X must equal the step key name.
+        """Enforce that if step.run is an in-document reference like '#X'.
+
+        Then X must equal the step key name.
         Example:
           downloader: { run: "#downloader" }  ✅
           downloader: { run: "#other" }       ❌
@@ -182,6 +219,7 @@ class WorkflowNode(BaseModel):
 
 class CommandLineToolNode(BaseModel):
     """Command line tool node."""
+
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     kind: Literal["CommandLineTool"] = Field(alias="class")
@@ -201,8 +239,10 @@ GraphNode = Annotated[
 
 # ---------------- Document root ----------------
 
+
 class CWLDocument(BaseModel):
     """CWL document."""
+
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     cwlVersion: str
