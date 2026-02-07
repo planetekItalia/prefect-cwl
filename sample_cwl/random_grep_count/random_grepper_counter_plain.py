@@ -6,9 +6,9 @@ from pathlib import Path
 from prefect_cwl import create_flow_with_docker_backend
 
 inputs = {
-        "random_string_number": 100,
-        "grep_string": "abc",
-    }
+    "random_string_number": 100,
+    "grep_string": "abc",
+}
 with tempfile.TemporaryDirectory(delete=False) as tmpdir:
     random_string = "".join(random.choice(string.ascii_letters) for _ in range(10))
     with open(Path(__file__).parent / "random_grep_count.cwl") as inp:

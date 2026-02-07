@@ -54,22 +54,9 @@ def _create_executor_with_backend(
     return f_builder.build_executor(workflow_plan, backend)
 
 
-def _create_flow_with_backend(
-    workflow_text: str,
-    host_work_dir: Path,
-    workflow_id: str,
-    backend: Backend,
-) -> Flow:
-    """Backward-compatible: create a Prefect Flow object (dynamic / closure)."""
-    workflow_plan = _prepare_plan(workflow_text, host_work_dir, workflow_id)
-
-    f_builder = PrefectFlowBuilder()
-    return f_builder.build(workflow_plan, backend)
-
-
 def _wrap_executor_as_flow(
     workflow_id: str,
-    executor: Callable[..., Awaitable[Dict[str, Any]]],
+    executor,
 ) -> Flow:
     """Wrap an executor into a Flow for convenience local usage."""
 
