@@ -38,8 +38,8 @@ class K8sBackend(Backend):
             "PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME", "prefect-flow-runner"
         ),
         image_pull_secrets: List[str] = os.environ.get(
-            "PREFECT_CWL_K8S_PULL_SECRETS", None
-        ),
+            "PREFECT_CWL_K8S_PULL_SECRETS", ""
+        ).split(","),
         ttl_seconds_after_finished: int = 3600,
     ) -> None:
         """Initialize the backend.
