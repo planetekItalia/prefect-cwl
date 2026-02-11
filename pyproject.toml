@@ -1,6 +1,6 @@
 [project]
 name = "prefect-cwl"
-version = "0.1.0"
+version = "0.1.1"
 description = "Orchestrate CWL with Prefect"
 authors = [
   {name = "Francesco Bruni", email = "bruni@planetek.it"},
