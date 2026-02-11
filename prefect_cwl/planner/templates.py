@@ -1,3 +1,5 @@
+"""Templates for workflow steps and workflows, with materialization logic."""
+
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Tuple, Any, Callable
@@ -6,19 +8,33 @@ from prefect_cwl.constants import JOBROOT, INROOT
 from prefect_cwl.exceptions import ValidationError
 from prefect_cwl.models import WorkflowStep, CommandLineToolNode
 
+
 def step_host_dirs(workspace: Path, step_name: str) -> Tuple[Path, Path]:
+    """Compute host directories for step output and job directory.
+
+    Args:
+        workspace (Path): Workspace root directory
+        step_name (str): Step name
+
+    Returns:
+         Tuple[Path, Path]: Host directories for step output and job directory
+    """
     host_outdir = workspace / "steps" / step_name / "out"
     host_jobdir = workspace / "steps" / step_name / "job"
     return host_outdir, host_jobdir
 
 
-
-
-
 @dataclass(frozen=True)
 class ResolvedInputs:
+    """Resolved inputs and mounts for a step.
+
+    Attributes:
+        volumes: Volume mounts. For Kubernetes, each dict contains mountPath and subPath.
+    """
+
     values: Dict[str, Dict[str, Any]]
     volumes: Dict[str, str]
+
 
 @dataclass(frozen=True)
 class ListingMaterialization:
@@ -28,13 +44,27 @@ class ListingMaterialization:
         host_path: Absolute host path where the content will be written.
         content: Text content to write at host_path.
     """
+
     host_path: Path
     content: str
 
 
 @dataclass
 class StepPlan:
-    """Fully materialized step ready for execution."""
+    """Fully materialized step ready for execution.
+
+    Attributes:
+        step_name: Unique name used for the container/job.
+        tool_id: ID of the CWL tool.
+        image: Container image reference.
+        argv: Command and arguments to execute.
+        outdir_container: Container path for the step output directory.
+        volumes: Volume mounts. For Kubernetes, each dict contains mountPath and subPath.
+        listings: Files/directories to materialize before execution.
+        out_artifacts: Paths to output artifacts produced by the step.
+        envs: Environment variables for the container/job.
+    """
+
     step_name: str
     tool_id: str
     image: str
@@ -52,7 +82,17 @@ class StepTemplate:
 
     Holds static information parsed from CWL. At runtime, call materialize_step
     to resolve inputs, mounts, argv, and listings.
+
+    Attributes:
+        step_name: Unique name used for the container/job.
+        tool_id: ID of the CWL tool.
+        tool: Parsed CommandLineToolNode.
+        wf_step: Parsed WorkflowStep.
+        image: Container image reference.
+        outdir_container: Container path for the step output directory.
+        envs: Environment variables for the container/job.
     """
+
     step_name: str
     tool_id: str
     tool: CommandLineToolNode
@@ -62,26 +102,30 @@ class StepTemplate:
     envs: Dict[str, str]
 
     def _compute_base_step_volumes(
-            self,
-            *,
-            host_outdir: Path,
-            outdir_container: PurePosixPath,
-            host_jobdir: Path,
+        self,
+        *,
+        host_outdir: Path,
+        outdir_container: PurePosixPath,
+        host_jobdir: Path,
     ) -> Dict[str, str]:
         return {
             str(host_outdir): f"{outdir_container}:rw",
             str(host_jobdir): f"{JOBROOT}:rw",
         }
 
-    def _resolve_step_inputs_and_mounts(self,
-            *,
-            wf_step: WorkflowStep,
-            clt: CommandLineToolNode,
-            workflow_inputs: Dict[str, Any],
-            produced: Dict[Tuple[str, str], Path],
-            base_volumes: Dict[str, str],
+    def _resolve_step_inputs_and_mounts(
+        self,
+        *,
+        wf_step: WorkflowStep,
+        clt: CommandLineToolNode,
+        workflow_inputs: Dict[str, Any],
+        produced: Dict[Tuple[str, str], Path],
+        base_volumes: Dict[str, str],
     ) -> ResolvedInputs:
-        values: Dict[str, Dict[str, Any]] = {"workflow": dict(workflow_inputs), "inputs": {}}
+        values: Dict[str, Dict[str, Any]] = {
+            "workflow": dict(workflow_inputs),
+            "inputs": {},
+        }
         volumes = dict(base_volumes)
 
         def as_cwl_directory(container_path: PurePosixPath) -> Dict[str, Any]:
@@ -99,7 +143,9 @@ class StepTemplate:
                 upstream_step, upstream_outport = src.split("/", 1)
                 host_art = produced.get((upstream_step, upstream_outport))
                 if host_art is None:
-                    raise ValidationError(f"Step {self.step_name!r} depends on {src!r} but it wasn't produced")
+                    raise ValidationError(
+                        f"Step {self.step_name!r} depends on {src!r} but it wasn't produced"
+                    )
 
                 tool_input = clt.inputs.get(inport)
                 if tool_input is None:
@@ -131,12 +177,12 @@ class StepTemplate:
         return ResolvedInputs(values=values, volumes=volumes)
 
     def materialize_step(
-            self,
-            *,
-            workflow_inputs: Dict[str, Any],
-            produced: Dict[Tuple[str, str], Path],
-            workspace: Path,
-            render_io,
+        self,
+        *,
+        workflow_inputs: Dict[str, Any],
+        produced: Dict[Tuple[str, str], Path],
+        workspace: Path,
+        render_io,
     ) -> StepPlan:
         """
         Convert a StepTemplate into a StepPlan by resolving actual runtime values.
@@ -190,8 +236,6 @@ class StepTemplate:
         )
 
 
-
-
 @dataclass
 class WorkflowTemplate:
     """Workflow structure without materialized values.
@@ -204,6 +248,7 @@ class WorkflowTemplate:
         workflow_outputs: Output schemas describing sources.
         waves: Topological waves of step names.
     """
+
     workflow_id: str
     workflow_inputs: Dict[str, Any]  # Input schemas (types), not values
     workspace: Path
@@ -216,11 +261,18 @@ class WorkflowTemplate:
         for wave in self.waves:
             yield [self.step_templates.get(step) for step in wave]
 
+
 def validate_and_materialize_listings(
-        *,
-        rendered_listing: List[Dict[str, str]],
-        host_jobdir: Path,
+    *,
+    rendered_listing: List[Dict[str, str]],
+    host_jobdir: Path,
 ) -> List[ListingMaterialization]:
+    """Validate and materialize InitialWorkDirRequirement listings.
+
+    Args:
+        rendered_listing (List[Dict[str, str]]): List of dicts with "entryname" and "entry" keys.
+        host_jobdir (Path): Host directory where the listings will be written.
+    """
     mats: List[ListingMaterialization] = []
 
     for item in rendered_listing:
@@ -243,7 +295,15 @@ def validate_and_materialize_listings(
     return mats
 
 
-def compute_out_artifacts(*, clt: CommandLineToolNode, host_outdir: Path) -> Dict[str, Path]:
+def compute_out_artifacts(
+    *, clt: CommandLineToolNode, host_outdir: Path
+) -> Dict[str, Path]:
+    """Compute output artifacts paths based on output bindings.
+
+    Args:
+        clt (CommandLineToolNode): The CommandLineToolNode to compute artifacts for.
+        host_outdir (Path): The host directory where the output artifacts will be written.
+    """
     out_artifacts: Dict[str, Path] = {}
     for outport, outspec in clt.outputs.items():
         glob = outspec.outputBinding.glob

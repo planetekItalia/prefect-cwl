@@ -20,6 +20,7 @@ class StageFile:
         content: File content to write; if None, create the directory only.
         mount_point: Container path where the file/dir will be mounted.
     """
+
     abs_path: str
     content: Optional[str]  # None => mkdir dir only
     mount_point: str
@@ -40,6 +41,7 @@ class StepPlan:
         user: Optional user spec for the container runtime (backend-specific).
         workdir: Optional working directory in the container.
     """
+
     job_name: str
     image: str
     command: List[str]

@@ -1,0 +1,29 @@
+repos:
+  # Ruff: lint + format (fast, replaces flake8/isort/black)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.14  # keep in sync with pyproject.toml if you pin it
+    hooks:
+      # Lint (errors, warnings, import order, etc.)
+      - id: ruff
+        args: [--fix]
+
+      # Formatter (ruff format)
+      - id: ruff-format
+
+  # Basic hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+  - repo: local
+    hooks:
+      - id: towncrier-fragment
+        name: Check towncrier newsfragment exists
+        entry: bash -c 'scripts/check_newsfragment.sh'
+        language: system
+        pass_filenames: false
+        stages: [commit]
