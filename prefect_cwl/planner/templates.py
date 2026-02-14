@@ -2,14 +2,19 @@
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Tuple, Any, Callable
+from typing import Dict, List, Tuple, Any, Callable, Optional, Union
 
 from prefect_cwl.constants import JOBROOT, INROOT
 from prefect_cwl.exceptions import ValidationError
 from prefect_cwl.models import WorkflowStep, CommandLineToolNode
 
 
-def step_host_dirs(workspace: Path, step_name: str) -> Tuple[Path, Path]:
+ArtifactPath = Union[Path, List[Path]]
+
+
+def step_host_dirs(
+    workspace: Path, step_name: str, job_suffix: Optional[str] = None
+) -> Tuple[Path, Path]:
     """Compute host directories for step output and job directory.
 
     Args:
@@ -19,8 +24,9 @@ def step_host_dirs(workspace: Path, step_name: str) -> Tuple[Path, Path]:
     Returns:
          Tuple[Path, Path]: Host directories for step output and job directory
     """
-    host_outdir = workspace / "steps" / step_name / "out"
-    host_jobdir = workspace / "steps" / step_name / "job"
+    run_name = f"{step_name}-{job_suffix}" if job_suffix else step_name
+    host_outdir = workspace / "steps" / run_name / "out"
+    host_jobdir = workspace / "steps" / run_name / "job"
     return host_outdir, host_jobdir
 
 
@@ -119,8 +125,9 @@ class StepTemplate:
         wf_step: WorkflowStep,
         clt: CommandLineToolNode,
         workflow_inputs: Dict[str, Any],
-        produced: Dict[Tuple[str, str], Path],
+        produced: Dict[Tuple[str, str], ArtifactPath],
         base_volumes: Dict[str, str],
+        input_overrides: Optional[Dict[str, Any]] = None,
     ) -> ResolvedInputs:
         values: Dict[str, Dict[str, Any]] = {
             "workflow": dict(workflow_inputs),
@@ -138,7 +145,43 @@ class StepTemplate:
                 "basename": container_path.name,
             }
 
+        overrides = input_overrides or {}
+
         for inport, src in wf_step.in_.items():
+            if inport in overrides:
+                override = overrides[inport]
+                tool_input = clt.inputs.get(inport)
+                if tool_input is None:
+                    raise ValidationError(f"Tool {clt.id!r} has no input {inport!r}")
+
+                if tool_input.type == "Directory" and isinstance(override, Path):
+                    mount_target = INROOT / inport
+                    volumes[str(override)] = f"{mount_target}:ro"
+                    values["inputs"][inport] = as_cwl_directory(mount_target)
+                elif tool_input.type == "File" and isinstance(override, Path):
+                    mount_target_dir = INROOT / inport
+                    volumes[str(override.parent)] = f"{mount_target_dir}:ro"
+                    file_in_container = mount_target_dir / override.name
+                    values["inputs"][inport] = as_cwl_file(file_in_container)
+                elif tool_input.type == "Directory[]" and isinstance(override, list):
+                    dirs = []
+                    for idx, item in enumerate(override):
+                        mount_target = INROOT / inport / str(idx)
+                        volumes[str(item)] = f"{mount_target}:ro"
+                        dirs.append(as_cwl_directory(mount_target))
+                    values["inputs"][inport] = dirs
+                elif tool_input.type == "File[]" and isinstance(override, list):
+                    files = []
+                    for idx, item in enumerate(override):
+                        mount_target_dir = INROOT / inport / str(idx)
+                        volumes[str(item.parent)] = f"{mount_target_dir}:ro"
+                        file_in_container = mount_target_dir / item.name
+                        files.append(as_cwl_file(file_in_container))
+                    values["inputs"][inport] = files
+                else:
+                    values["inputs"][inport] = override
+                continue
+
             if isinstance(src, str) and "/" in src:
                 upstream_step, upstream_outport = src.split("/", 1)
                 host_art = produced.get((upstream_step, upstream_outport))
@@ -152,15 +195,48 @@ class StepTemplate:
                     raise ValidationError(f"Tool {clt.id!r} has no input {inport!r}")
 
                 if tool_input.type == "Directory":
+                    if isinstance(host_art, list):
+                        raise ValidationError(
+                            f"Input {inport!r} expects Directory but got array from {src!r}"
+                        )
                     mount_target = INROOT / inport
                     volumes[str(host_art)] = f"{mount_target}:ro"
                     values["inputs"][inport] = as_cwl_directory(mount_target)
 
                 elif tool_input.type == "File":
+                    if isinstance(host_art, list):
+                        raise ValidationError(
+                            f"Input {inport!r} expects File but got array from {src!r}"
+                        )
                     mount_target_dir = INROOT / inport
                     volumes[str(host_art.parent)] = f"{mount_target_dir}:ro"
                     file_in_container = mount_target_dir / host_art.name
                     values["inputs"][inport] = as_cwl_file(file_in_container)
+
+                elif tool_input.type == "Directory[]":
+                    if not isinstance(host_art, list):
+                        raise ValidationError(
+                            f"Input {inport!r} expects Directory[] but got scalar from {src!r}"
+                        )
+                    dirs = []
+                    for idx, item in enumerate(host_art):
+                        mount_target = INROOT / inport / str(idx)
+                        volumes[str(item)] = f"{mount_target}:ro"
+                        dirs.append(as_cwl_directory(mount_target))
+                    values["inputs"][inport] = dirs
+
+                elif tool_input.type == "File[]":
+                    if not isinstance(host_art, list):
+                        raise ValidationError(
+                            f"Input {inport!r} expects File[] but got scalar from {src!r}"
+                        )
+                    files = []
+                    for idx, item in enumerate(host_art):
+                        mount_target_dir = INROOT / inport / str(idx)
+                        volumes[str(item.parent)] = f"{mount_target_dir}:ro"
+                        file_in_container = mount_target_dir / item.name
+                        files.append(as_cwl_file(file_in_container))
+                    values["inputs"][inport] = files
 
                 else:
                     raise ValidationError(
@@ -180,9 +256,11 @@ class StepTemplate:
         self,
         *,
         workflow_inputs: Dict[str, Any],
-        produced: Dict[Tuple[str, str], Path],
+        produced: Dict[Tuple[str, str], ArtifactPath],
         workspace: Path,
         render_io,
+        job_suffix: Optional[str] = None,
+        input_overrides: Optional[Dict[str, Any]] = None,
     ) -> StepPlan:
         """
         Convert a StepTemplate into a StepPlan by resolving actual runtime values.
@@ -198,7 +276,9 @@ class StepTemplate:
         Returns:
             Fully materialized StepPlan ready for execution
         """
-        host_outdir, host_jobdir = step_host_dirs(workspace, self.step_name)
+        host_outdir, host_jobdir = step_host_dirs(
+            workspace, self.step_name, job_suffix=job_suffix
+        )
 
         base_volumes = self._compute_base_step_volumes(
             host_outdir=host_outdir,
@@ -212,6 +292,7 @@ class StepTemplate:
             workflow_inputs=workflow_inputs,
             produced=produced,
             base_volumes=base_volumes,
+            input_overrides=input_overrides,
         )
 
         argv, rendered_listing = render_io(self.tool, resolved.values)

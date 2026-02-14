@@ -9,12 +9,13 @@ import os
 import shlex
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from prefect_docker.containers import create_docker_container, start_docker_container
 from prefect_docker.images import pull_docker_image
 
 from prefect_cwl.planner.templates import StepTemplate, ListingMaterialization
+from prefect_cwl.planner.templates import ArtifactPath
 from prefect_cwl.backends.base import Backend
 from prefect_cwl.exceptions import ValidationError
 from prefect_cwl.io import build_command_and_listing
@@ -119,8 +120,10 @@ class DockerBackend(Backend):
         self,
         step_template: StepTemplate,
         workflow_inputs: Dict[str, Any],
-        produced: Dict[Tuple[str, str], Path],
+        produced: Dict[Tuple[str, str], ArtifactPath],
         workspace: Path,
+        job_suffix: Optional[str] = None,
+        input_overrides: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Execute a single CWL step."""
         logger = get_logger("prefect-cwl")
@@ -128,63 +131,78 @@ class DockerBackend(Backend):
         if step_template is None:
             raise ValidationError("step_template is required")
 
-        # MATERIALIZE the step with runtime values
-        step_plan = step_template.materialize_step(
-            workflow_inputs=workflow_inputs,
-            produced=produced,
-            workspace=workspace,
-            render_io=build_command_and_listing,
-        )
-
-        # Execute the materialized plan
-        self._write_listings(step_plan.listings)
-        self._ensure_mount_sources(step_plan.volumes)
-
-        await pull_docker_image(repository=step_plan.image)
-
-        job_name = f"{step_plan.step_name}-{uuid.uuid4().hex[:12]}"
-        volume_args = self._volumes_to_prefect_docker(step_plan.volumes)
-
-        logger.info("Docker step: %s image=%s", job_name, step_plan.image)
-        logger.info("Command: %s", shlex.join(step_plan.argv))
-        logger.info("Volumes: %s", volume_args)
-
-        user = None
-        if hasattr(os, "getuid"):
-            user = f"{os.getuid()}:{os.getgid()}"
-
-        container = await create_docker_container(
-            name=job_name,
-            image=step_plan.image,
-            command=step_plan.argv,  # Pass as list
-            auto_remove=False,
-            volumes=volume_args,
-            environment=step_plan.envs,
-            user=user,
-        )
-
-        container = await start_docker_container(container_id=container.id)
-
-        log_task = asyncio.create_task(
-            asyncio.to_thread(self._stream_logs, container, logger, f"[{job_name}]")
-        )
-
-        try:
-            result = await asyncio.to_thread(container.wait)
-            status = int(result.get("StatusCode", 1))
-        finally:
-            try:
-                await log_task
-            except Exception as e:
-                logger.warning("Log streaming failed: %s", e)
-                status = -1
-
-        if status != 0:
-            tail = self._tail_logs(container)
-            raise RuntimeError(
-                f"Step {step_plan.step_name} failed with exit code {status}\n\n{tail}"
+        async def _execute_once(
+            *,
+            local_inputs: Dict[str, Any],
+            local_workspace: Path,
+            job_suffix: Optional[str],
+        ) -> Dict[str, Path]:
+            # MATERIALIZE the step with runtime values
+            step_plan = step_template.materialize_step(
+                workflow_inputs=local_inputs,
+                produced=produced,
+                workspace=local_workspace,
+                render_io=build_command_and_listing,
+                job_suffix=job_suffix,
+                input_overrides=input_overrides,
             )
 
-        # Track produced outputs for downstream steps
-        for output_port, host_path in step_plan.out_artifacts.items():
-            produced[(step_plan.step_name, output_port)] = host_path
+            # Execute the materialized plan
+            self._write_listings(step_plan.listings)
+            self._ensure_mount_sources(step_plan.volumes)
+
+            await pull_docker_image(repository=step_plan.image)
+
+            suffix = f"-{job_suffix}" if job_suffix else ""
+            job_name = f"{step_plan.step_name}{suffix}-{uuid.uuid4().hex[:12]}"
+            volume_args = self._volumes_to_prefect_docker(step_plan.volumes)
+
+            logger.info("Docker step: %s image=%s", job_name, step_plan.image)
+            logger.info("Command: %s", shlex.join(step_plan.argv))
+            logger.info("Volumes: %s", volume_args)
+
+            user = None
+            if hasattr(os, "getuid"):
+                user = f"{os.getuid()}:{os.getgid()}"
+
+            container = await create_docker_container(
+                name=job_name,
+                image=step_plan.image,
+                command=step_plan.argv,  # Pass as list
+                auto_remove=False,
+                volumes=volume_args,
+                environment=step_plan.envs,
+                user=user,
+            )
+
+            container = await start_docker_container(container_id=container.id)
+
+            log_task = asyncio.create_task(
+                asyncio.to_thread(self._stream_logs, container, logger, f"[{job_name}]")
+            )
+
+            try:
+                result = await asyncio.to_thread(container.wait)
+                status = int(result.get("StatusCode", 1))
+            finally:
+                try:
+                    await log_task
+                except Exception as e:
+                    logger.warning("Log streaming failed: %s", e)
+                    status = -1
+
+            if status != 0:
+                tail = self._tail_logs(container)
+                raise RuntimeError(
+                    f"Step {step_plan.step_name} failed with exit code {status}\n\n{tail}"
+                )
+
+            return step_plan.out_artifacts
+
+        out_artifacts = await _execute_once(
+            local_inputs=workflow_inputs,
+            local_workspace=workspace,
+            job_suffix=job_suffix,
+        )
+        for output_port, host_path in out_artifacts.items():
+            produced[(step_template.step_name, output_port)] = host_path

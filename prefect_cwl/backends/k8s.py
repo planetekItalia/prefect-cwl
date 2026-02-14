@@ -11,11 +11,12 @@ import shlex
 import uuid
 from logging import Logger
 from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional
 
 from prefect_kubernetes import KubernetesJob
 
 from prefect_cwl.planner.templates import StepPlan, ListingMaterialization, StepTemplate
+from prefect_cwl.planner.templates import ArtifactPath
 from prefect_cwl.backends.base import Backend
 from prefect_cwl.io import build_command_and_listing
 from prefect_cwl.logger import get_logger
@@ -286,8 +287,10 @@ class K8sBackend(Backend):
         self,
         step_template: StepTemplate,
         workflow_inputs: Dict[str, Any],
-        produced: Dict[Tuple[str, str], Path],
+        produced: Dict[Tuple[str, str], ArtifactPath],
         workspace: Path,
+        job_suffix: Optional[str] = None,
+        input_overrides: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Execute step on K8s."""
         logger = get_logger("prefect-k8s")
@@ -301,6 +304,8 @@ class K8sBackend(Backend):
             produced=produced,
             workspace=workspace,
             render_io=build_command_and_listing,
+            job_suffix=job_suffix,
+            input_overrides=input_overrides,
         )
 
         # Map to PVC paths

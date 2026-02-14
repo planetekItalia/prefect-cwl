@@ -179,6 +179,34 @@ class WorkflowStep(BaseModel):
     out: List[str] = Field(default_factory=list)
     definition: Optional[CommandLineToolNode] = None
     volumes: Dict[str, str] = Field(default_factory=dict)
+    scatter: Optional[Union[str, List[str]]] = None
+
+    @field_validator("scatter")
+    @classmethod
+    def scatter_must_be_string_or_list(
+        cls, v: Optional[Union[str, List[str]]]
+    ) -> Optional[Union[str, List[str]]]:
+        """Validate scatter as a non-empty string or list of non-empty strings."""
+        if v is None:
+            return v
+        if isinstance(v, str):
+            vv = v.strip()
+            if not vv:
+                raise ValueError("scatter must be a non-empty string")
+            return vv
+        if isinstance(v, list):
+            if not v:
+                raise ValueError("scatter list must not be empty")
+            out: List[str] = []
+            for item in v:
+                if not isinstance(item, str):
+                    raise ValueError("scatter list items must be strings")
+                item = item.strip()
+                if not item:
+                    raise ValueError("scatter list items must be non-empty strings")
+                out.append(item)
+            return out
+        raise ValueError("scatter must be a string or list of strings")
 
 
 # ---------------- Graph nodes ----------------

@@ -12,7 +12,22 @@ class DummyStepTemplate:
         self.step_name = step_name
         self._plan = plan
 
-    def materialize_step(self, *, workflow_inputs, produced, workspace, render_io):  # type: ignore[no-untyped-def]
+    def materialize_step(
+        self, *, workflow_inputs, produced, workspace, render_io, **kwargs
+    ):  # type: ignore[no-untyped-def]
+        return self._plan
+
+
+class CapturingStepTemplate:
+    def __init__(self, step_name: str, plan: StepPlan):
+        self.step_name = step_name
+        self._plan = plan
+        self.seen_kwargs = None
+
+    def materialize_step(
+        self, *, workflow_inputs, produced, workspace, render_io, **kwargs
+    ):  # type: ignore[no-untyped-def]
+        self.seen_kwargs = kwargs
         return self._plan
 
 
@@ -146,3 +161,55 @@ async def test_k8s_backend_failure_raises(tmp_path, monkeypatch):
         await backend.call_single_step(
             step, workflow_inputs={}, produced={}, workspace=tmp_path
         )
+
+
+@pytest.mark.asyncio
+async def test_k8s_backend_passes_suffix_and_overrides_to_materialize(
+    tmp_path, monkeypatch
+):
+    pvc_root = "/data"
+    outdir = Path(pvc_root) / "o"
+    jobdir = Path(pvc_root) / "j"
+    override_dir = Path(pvc_root) / "upstream" / "out"
+
+    plan = StepPlan(
+        step_name="augmenter",
+        tool_id="t",
+        image="alpine",
+        argv=["true"],
+        outdir_container=Path("/out"),
+        volumes={str(outdir): "/out:rw", str(jobdir): "/cwl_job:rw"},
+        listings=[],
+        out_artifacts={"o": outdir / "x.txt"},
+        envs={},
+    )
+    step = CapturingStepTemplate("augmenter", plan)
+
+    class FakeJobRun:
+        def __init__(self, result=None):
+            self.wait_for_completion = AsyncMock()
+            self.fetch_result = AsyncMock(return_value=result)
+
+    class FakeK8sJob:
+        def __init__(self, namespace, v1_job):
+            self._job_run = FakeJobRun(result={"ok": True})
+
+        async def trigger(self):
+            return self._job_run
+
+    monkeypatch.setattr("prefect_cwl.backends.k8s.KubernetesJob", FakeK8sJob)
+
+    backend = K8sBackend(namespace="ns", pvc_name="pvc", pvc_mount_path=pvc_root)
+    await backend.call_single_step(
+        step_template=step,
+        workflow_inputs={},
+        produced={},
+        workspace=tmp_path,
+        job_suffix="augmenter_input-0",
+        input_overrides={"augmenter_input": override_dir},
+    )
+
+    assert step.seen_kwargs == {
+        "job_suffix": "augmenter_input-0",
+        "input_overrides": {"augmenter_input": override_dir},
+    }

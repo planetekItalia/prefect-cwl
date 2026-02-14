@@ -7,8 +7,26 @@ If you pick the *K8s* version, be sure you got your *KUBECONFIG* env variable co
 
 At the current time we have:
 
-- *Random Grepper Counter*: Generate a file with *N* random string, then grep it using a *predicate*, then count how many lines have been preserved
-  - To run workflow cwl execute `cwltool random_grep_count/random_grep_count.cwl#random_grep_count --grep_string <grep_string> --random_string_number <random_string_number>`
+- *Random Grepper Counter*: Generate a file with *N* random strings, grep using one or more predicates, then count matching lines.
+  - CWL (base, no scatter): `random_grep_count/random_grep_count.cwl`
+  - Runner (Docker): `random_grep_count/random_grepper_counter.py`
+  - Runner (K8s): `random_grep_count/random_grepper_counter_k8s.py`
+  - Purpose: baseline 3-step chain `randomizer -> grepper -> counter`.
+  - To run with `cwltool`:
+  ```bash
+    cwltool random_grep_count/random_grep_count.cwl#random_grep_count --grep_string <grep_string> --random_string_number <random_string_number>
+  ```
+  - CWL (scatter with augmenter): `random_grep_count/random_grep_count_scatter.cwl`
+  - Runner (Docker): `random_grep_count/random_grepper_counter_scatter.py`
+  - Inputs file: `random_grep_count/input_scatter.yml`
+  - Purpose: scatter `grepper` over `grep_string[]`, then scatter `augmenter` over gathered grep outputs, then count all resulting directories.
+  - CWL (scatter + first-item gather at tool level): `random_grep_count/random_grep_count_scatter_gather_grep.cwl`
+  - Runner (Docker): `random_grep_count/random_grepper_counter_scatter_gather_grep.py`
+  - Inputs file: `random_grep_count/input_scatter_gather_grep.yml`
+  - Purpose: scatter `grepper` over `grep_string[]`, then pass gathered `Directory[]` to `counter` and select only index `0` via tool `arguments.valueFrom`.
+  - Prefect deploy examples:
+    - Local serve: `random_grep_count/random_grepper_counter_serve.py`
+    - K8s serve: `random_grep_count/random_grepper_counter_serve_k8s.py`
 - *Multiple Input Checker*: Test all the inputs supported by the adapter and persist them to a file
   - To run workflow cwl execute
   ```bash

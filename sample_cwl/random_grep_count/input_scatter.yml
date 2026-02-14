@@ -1,0 +1,6 @@
+grep_string:
+  - jnk
+  - nm3e
+  - edsmna
+random_string_number: 100
+augment_lines: 10

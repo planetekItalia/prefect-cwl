@@ -2,8 +2,21 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from models import WorkflowNode, CWLDocument, WorkflowInput, WorkflowOutput, WorkflowStep, CommandLineToolNode, \
-    Requirements, DockerRequirement, EnvVarRequirement, ToolInput, InputBinding, ToolOutput, OutputBinding
+from prefect_cwl.models import (
+    WorkflowNode,
+    CWLDocument,
+    WorkflowInput,
+    WorkflowOutput,
+    WorkflowStep,
+    CommandLineToolNode,
+    Requirements,
+    DockerRequirement,
+    EnvVarRequirement,
+    ToolInput,
+    InputBinding,
+    ToolOutput,
+    OutputBinding,
+)
 
 
 @pytest.fixture
@@ -19,8 +32,14 @@ def linear_doc() -> CWLDocument:
                 "final_out": WorkflowOutput(type="File", outputSource="tool2/out_file")
             },
             "steps": {
-                "tool1": WorkflowStep(run="#tool1", **{"in": {"msg": "greeting"}}, out=["out_file"]),
-                "tool2": WorkflowStep(run="#tool2", **{"in": {"upstream": "tool1/out_file"}}, out=["out_file"]),
+                "tool1": WorkflowStep(
+                    run="#tool1", **{"in": {"msg": "greeting"}}, out=["out_file"]
+                ),
+                "tool2": WorkflowStep(
+                    run="#tool2",
+                    **{"in": {"upstream": "tool1/out_file"}},
+                    out=["out_file"],
+                ),
             },
         }
     )
@@ -62,7 +81,9 @@ def linear_doc() -> CWLDocument:
             ),
             "baseCommand": "python",
             "inputs": {
-                "upstream": ToolInput(type="File", inputBinding=InputBinding(position=1)),
+                "upstream": ToolInput(
+                    type="File", inputBinding=InputBinding(position=1)
+                ),
             },
             "outputs": {
                 "out_file": ToolOutput(

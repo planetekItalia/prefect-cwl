@@ -214,7 +214,7 @@ def materialize_step(
 
 ### 4. PrefectFlowBuilder
 
-**File:** `builder.py`
+**File:** `prefect_cwl/flow_builder.py`
 
 **Responsibility:** Convert `WorkflowTemplate` into Prefect flow.
 
@@ -232,6 +232,7 @@ def build(template: WorkflowTemplate, backend: Backend) -> Flow
    - Track `produced` dict (shared mutable state)
    - For each wave:
      - Submit tasks in parallel
+     - If a step declares CWL `scatter`, submit one task run per array item
      - Barrier: wait for all to complete
    - Return workflow outputs
 4. Set function signature for Prefect UI
@@ -285,14 +286,14 @@ class Backend(ABC):
 async def call_single_step(...):
     # 1. Materialize plan
     step_plan = materialize_step(...)
-    
+
     # 2. Prepare filesystem
     _write_listings(step_plan.listings)
     _ensure_mount_sources(step_plan.volumes)
-    
+
     # 3. Pull image
     await pull_docker_image(step_plan.image)
-    
+
     # 4. Create and start container
     container = await create_docker_container(
         command=step_plan.argv,  # Pass as list!
@@ -300,11 +301,11 @@ async def call_single_step(...):
         environment=step_plan.envs,
         user=f"{uid}:{gid}",  # Host user mapping
     )
-    
+
     # 5. Stream logs concurrently with execution
     log_task = asyncio.create_task(...)
     result = await container.wait()
-    
+
     # 6. Track outputs
     produced.update(...)
 ```
@@ -331,18 +332,18 @@ async def call_single_step(...):
     # 1. Materialize plan
     step_plan = materialize_step(...)
     step = _map_stepplan_to_pvc(step_plan)  # Ensure PVC paths
-    
+
     # 2. Mkdir job - create directories in PVC
     if dirs:
         await run_namespaced_job(_mkdir_job(...))
-    
+
     # 3. Listings job - write InitialWorkDir files
     if step.listings:
         await run_namespaced_job(_listings_job(...))
-    
+
     # 4. Main job - execute tool
     await run_namespaced_job(_step_job(...))
-    
+
     # 5. Track outputs
     produced.update(...)
 ```
@@ -500,11 +501,12 @@ Return workflow outputs
    - **Impact:** Cannot pass files directly to workflow
    - **Mitigation:** Use InitialWorkDirRequirement or mount external volumes
 
-4. **No Scatter/Gather**
-   - **Limit:** No array-based parallelism
-   - **Rationale:** Complex to implement, Prefect has its own patterns
-   - **Impact:** Cannot map steps over arrays
-   - **Mitigation:** Use Prefect's task mapping instead
+4. **Partial Scatter Support**
+   - **Supported:** Single-input `scatter` only (one inport mapped over a list)
+   - **Supported:** Scatter source can come from workflow input arrays or upstream produced list outputs
+   - **Supported:** Gather-like behavior for scattered outputs (ordered list by scatter index)
+   - **Not Supported:** Multi-input scatter / dotproduct / nested cross-product semantics
+   - **Mitigation:** Keep scatter definitions to one array input per step
 
 ### Implementation Constraints (Technical Limits)
 
@@ -518,22 +520,29 @@ Return workflow outputs
    - **Impact:** Large datasets can be slow
    - **Mitigation:** Use fast storage (SSD, local volumes)
 
-3. **No Output Validation**
+3. **Scatter Concurrency Controls**
+   - **Limit:** Two controls exist with different scope:
+     - Local executor gate via `PREFECT_CWL_SCATTER_CONCURRENCY`
+     - Prefect orchestration hard limit via tag concurrency
+   - **Impact:** If only local gating is configured, other flows/workers can still consume cluster capacity
+   - **Mitigation:** Configure a Prefect tag limit for `PREFECT_CWL_SCATTER_TAG` to enforce global hard caps
+
+4. **No Output Validation**
    - **Limit:** Doesn't verify outputs exist after execution
    - **Risk:** Silent failures if tool doesn't create expected outputs
    - **Mitigation:** Plan to add in future (see Roadmap)
 
-4. **Workspace Cleanup**
+5. **Workspace Cleanup**
    - **Limit:** User must clean up workspace directories
    - **Risk:** Disk space exhaustion
    - **Mitigation:** Document cleanup responsibility, consider TTL
 
-5. **K8s Job Accumulation**
+6. **K8s Job Accumulation**
    - **Limit:** Jobs remain until TTL (default 1 hour)
    - **Impact:** Namespace pollution, potential quota issues
    - **Mitigation:** Set appropriate TTL, clean up old jobs
 
-6. **Docker User Mapping (Windows)**
+7. **Docker User Mapping (Windows)**
    - **Limit:** UID/GID mapping only works on Unix
    - **Risk:** Permission issues on Windows hosts
    - **Mitigation:** Document as Unix-only feature

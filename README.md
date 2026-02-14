@@ -4,11 +4,11 @@
   # Prefect CWL
 </div>
 
-A lightweight adapter that bridges the *Common Workflow Language* (CWL) world with *Prefect*. 
-It not only executes CWL but lets you orchestrate it with Prefect’s scheduling, retries, observability, and deployments (this a WIP, actually). 
+A lightweight adapter that bridges the *Common Workflow Language* (CWL) world with *Prefect*.
+It not only executes CWL but lets you orchestrate it with Prefect’s scheduling, retries, observability, and deployments (this a WIP, actually).
 Execution is pluggable via backends, starting with Docker and with Kubernetes as a forthcoming option.
 
-In this library, the atomic unit is a single CWL step (a `CommandLineTool` or workflow step), not an entire workflow/flow. 
+In this library, the atomic unit is a single CWL step (a `CommandLineTool` or workflow step), not an entire workflow/flow.
 Prefect orchestrates those steps according to the CWL-defined dependencies.
 
 ## What this achieves
@@ -83,7 +83,7 @@ Shall you want to use *K8s* backend, special requirements apply:
 
 - a running K8s cluster
 - a PVC installed and deployed and usable by Prefect
-- the following environment env vars set, if needed: 
+- the following environment env vars set, if needed:
   - `KUBECONFIG`, for custom configuration
   - `PREFECT_CWL_K8S_NAMESPACE`, for custom namespace (default: `prefect`)
   - `PREFECT_CWL_K8S_PVC_NAME`, for custom PVC name (default: `prefect-shared-pvc`)
@@ -93,6 +93,25 @@ Shall you want to use *K8s* backend, special requirements apply:
 
 For running a local K8s cluster, configured with Prefect and all the above requirements, check the *prefect-k8s-demo* folder.
 
+## Runtime concurrency controls
+
+`prefect-cwl` supports CWL scatter with runtime guardrails:
+
+- `PREFECT_CWL_SCATTER_CONCURRENCY` (default: `4`): local in-flow throttling for submitted scattered runs. Set `0` or negative to disable this local gate.
+- `PREFECT_CWL_SCATTER_TAG` (default: `prefect-cwl-scatter`): Prefect tag attached to `run_step` task submissions. Set to empty to disable tag attachment.
+
+To enforce a hard orchestration limit, create a Prefect concurrency limit on that tag:
+
+```bash
+prefect concurrency-limit create prefect-cwl-scatter 8
+prefect concurrency-limit inspect prefect-cwl-scatter
+```
+
+Notes:
+- The Prefect tag limit is the hard control across workers/flows using the same API/server.
+- The local `PREFECT_CWL_SCATTER_CONCURRENCY` gate is process-local and complements (does not replace) Prefect tag limits.
+- With current implementation, `PREFECT_CWL_SCATTER_TAG` is applied to all `run_step` task submissions, including non-scattered runs.
+
 ## Install the library locally
 
 Prerequisite: install `uv` (https://github.com/astral-sh/uv). Once `uv` has been installed successfully, move in the project folder and use:
@@ -101,8 +120,8 @@ Prerequisite: install `uv` (https://github.com/astral-sh/uv). Once `uv` has been
 uv sync --all-extras --group dev
 ```
 
-Be sure to set the *PYTHONPATH* variable to *prefect_cwl* directory. 
-Alternatively, use the command `echo PYTHONPATH=$PWD`, to set the path pointing to the current folder. 
+Be sure to set the *PYTHONPATH* variable to *prefect_cwl* directory.
+Alternatively, use the command `echo PYTHONPATH=$PWD`, to set the path pointing to the current folder.
 Otherwise, install it into *editable* mode. Should you run tests, install *dev* dependencies.
 
 Start the Prefect server using the command:
