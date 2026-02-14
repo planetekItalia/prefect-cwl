@@ -376,6 +376,34 @@ async def call_single_step(...):
   - Step-level env values override runtime/template env on key collision.
   - If no run context/job variables exist (e.g. local runs), backend defaults are used.
 
+### 8. Step Resource Requirements
+
+**Scope:** Step-level CWL `ResourceRequirement` subset.
+
+**Supported CWL fields (per CommandLineTool):**
+- `coresMin`
+- `coresMax`
+- `ramMin`
+- `ramMax`
+
+**Normalization:**
+- Planner parses `ResourceRequirement` and normalizes it into per-step resource metadata.
+- This metadata is carried in `StepTemplate` and `StepPlan`.
+
+**Executor Mapping:**
+- **Kubernetes backend**
+  - Maps to container `resources.requests` and `resources.limits`
+  - CPU: `coresMin` -> request, `coresMax` -> limit
+  - Memory: `ramMin`/`ramMax` mapped as `Mi`
+- **Docker backend**
+  - Applies hard limits at container create time
+  - CPU: `coresMax` preferred (fallback to `coresMin`) -> `nano_cpus`
+  - Memory: `ramMax` preferred (fallback to `ramMin`) -> `mem_limit`
+
+**Notes:**
+- This is intentionally a partial CWL implementation; dynamic/expression-based resource evaluation is not covered.
+- Tool-level values are interpreted per-step and applied independently for each run (including scattered runs).
+
 ---
 
 ## Data Flow

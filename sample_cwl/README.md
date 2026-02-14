@@ -17,6 +17,9 @@ At the current time we have:
   - Runner (Docker): `random_grep_count/random_grepper_counter.py`
   - Runner (K8s): `random_grep_count/random_grepper_counter_k8s.py`
   - Purpose: baseline 3-step chain `randomizer -> grepper -> counter`.
+  - CWL (base + `ResourceRequirement` subset): `random_grep_count/random_grep_count_with_resources.cwl`
+  - Runner (Docker): `random_grep_count/random_grepper_counter_with_resources.py`
+  - Purpose: same baseline chain with per-step `coresMin/coresMax/ramMin/ramMax`.
   - To run with `cwltool`:
   ```bash
     cwltool random_grep_count/random_grep_count.cwl#random_grep_count --grep_string <grep_string> --random_string_number <random_string_number>
