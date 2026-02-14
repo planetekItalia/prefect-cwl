@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
 
 from prefect_kubernetes import KubernetesJob
+from prefect.context import get_run_context
+from prefect.exceptions import MissingContextError
 
 from prefect_cwl.planner.templates import StepPlan, ListingMaterialization, StepTemplate
 from prefect_cwl.planner.templates import ArtifactPath
@@ -59,6 +61,7 @@ class K8sBackend(Backend):
         self.service_account_name = service_account_name
         self.image_pull_secrets = image_pull_secrets or []
         self.ttl_seconds_after_finished = ttl_seconds_after_finished
+        self._runtime_job_variables_cache: Optional[Dict[str, Any]] = None
 
     # ------------------------
     # Helpers
@@ -135,6 +138,132 @@ class K8sBackend(Backend):
         s = re.sub(r"[^a-z0-9]+$", "", s)
         return s or "job"
 
+    def _runtime_job_variables(self) -> Dict[str, Any]:
+        """Read flow-run job variables provided by Prefect worker infrastructure.
+
+        On deployed runs, this may include values rendered from the work pool base
+        job template (for example namespace, service account, env, volumes).
+        """
+        if self._runtime_job_variables_cache is not None:
+            return self._runtime_job_variables_cache
+
+        try:
+            ctx = get_run_context()
+        except MissingContextError:
+            self._runtime_job_variables_cache = {}
+            return self._runtime_job_variables_cache
+
+        flow_run = getattr(ctx, "flow_run", None)
+        raw = getattr(flow_run, "job_variables", None)
+        self._runtime_job_variables_cache = raw if isinstance(raw, dict) else {}
+        return self._runtime_job_variables_cache
+
+    def _effective_namespace(self) -> str:
+        runtime_vars = self._runtime_job_variables()
+        namespace = runtime_vars.get("namespace")
+        return str(namespace).strip() if namespace else self.namespace
+
+    def _effective_service_account_name(self) -> Optional[str]:
+        runtime_vars = self._runtime_job_variables()
+        service_account_name = runtime_vars.get("service_account_name")
+        if service_account_name:
+            return str(service_account_name).strip()
+        return self.service_account_name
+
+    def _effective_image_pull_secrets(self) -> List[dict]:
+        runtime_vars = self._runtime_job_variables()
+        runtime_pull_secrets = runtime_vars.get("image_pull_secrets", [])
+
+        merged: Dict[str, dict] = {}
+        for secret_name in self.image_pull_secrets:
+            if not secret_name:
+                continue
+            merged[str(secret_name)] = {"name": str(secret_name)}
+
+        if isinstance(runtime_pull_secrets, list):
+            for item in runtime_pull_secrets:
+                if isinstance(item, str) and item:
+                    merged[item] = {"name": item}
+                elif isinstance(item, dict):
+                    name = item.get("name")
+                    if isinstance(name, str) and name:
+                        merged[name] = {"name": name}
+        return list(merged.values())
+
+    def _effective_runtime_env(self) -> List[dict]:
+        runtime_vars = self._runtime_job_variables()
+        runtime_env = runtime_vars.get("env", {})
+
+        env_entries: List[dict] = []
+        if isinstance(runtime_env, dict):
+            for key, value in runtime_env.items():
+                if value is None:
+                    continue
+                env_entries.append({"name": str(key), "value": str(value)})
+        elif isinstance(runtime_env, list):
+            for item in runtime_env:
+                if isinstance(item, dict) and "name" in item:
+                    env_entries.append(dict(item))
+        return env_entries
+
+    def _effective_runtime_volume_mounts(self) -> List[dict]:
+        runtime_vars = self._runtime_job_variables()
+        mounts = runtime_vars.get("volume_mounts", runtime_vars.get("volumeMounts", []))
+        if not isinstance(mounts, list):
+            return []
+        out: List[dict] = []
+        for item in mounts:
+            if isinstance(item, dict) and item.get("name") and item.get("mountPath"):
+                out.append(dict(item))
+        return out
+
+    def _effective_runtime_volumes(self) -> List[dict]:
+        runtime_vars = self._runtime_job_variables()
+        volumes = runtime_vars.get("volumes", [])
+        if not isinstance(volumes, list):
+            return []
+        out: List[dict] = []
+        for item in volumes:
+            if isinstance(item, dict) and item.get("name"):
+                out.append(dict(item))
+        return out
+
+    def _merge_env(
+        self, runtime_env: List[dict], container_env: List[dict]
+    ) -> List[dict]:
+        """Merge env vars by name, letting container values override runtime ones."""
+        merged: List[dict] = []
+        by_name: Dict[str, int] = {}
+
+        for item in runtime_env + container_env:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if isinstance(name, str) and name:
+                if name in by_name:
+                    merged[by_name[name]] = dict(item)
+                else:
+                    by_name[name] = len(merged)
+                    merged.append(dict(item))
+            else:
+                merged.append(dict(item))
+        return merged
+
+    def _merge_named(self, first: List[dict], second: List[dict]) -> List[dict]:
+        """Merge lists of dicts keyed by 'name', with second list taking precedence."""
+        merged: Dict[str, dict] = {}
+        for item in first:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    merged[name] = dict(item)
+        for item in second:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    merged[name] = dict(item)
+        return list(merged.values())
+
     # ------------------------
     # Job builders
     # ------------------------
@@ -142,43 +271,51 @@ class K8sBackend(Backend):
         """Generate base Job manifest with PVC mounted. Set service account and image pull secrets as well, if provided."""
         volume_name = "work"
 
-        mounts = list(container_spec.get("volumeMounts", []))
-
-        if not any(
-            m.get("name") == volume_name and m.get("mountPath") == self.pvc_mount_path
+        runtime_mounts = self._effective_runtime_volume_mounts()
+        mounts = runtime_mounts + list(container_spec.get("volumeMounts", []))
+        # Ensure only our PVC-backed mount is used for the pvc root mountPath.
+        mounts = [
+            m
             for m in mounts
-        ):
-            mounts.append({"name": volume_name, "mountPath": self.pvc_mount_path})
+            if not (isinstance(m, dict) and m.get("mountPath") == self.pvc_mount_path)
+        ]
+        mounts.append({"name": volume_name, "mountPath": self.pvc_mount_path})
 
+        runtime_env = self._effective_runtime_env()
+        merged_env = self._merge_env(runtime_env, list(container_spec.get("env", [])))
         container = {
             "name": "main",
             **container_spec,
             "volumeMounts": mounts,
+            "env": merged_env,
         }
+
+        required_work_volume = {
+            "name": volume_name,
+            "persistentVolumeClaim": {"claimName": self.pvc_name},
+        }
+        runtime_volumes = self._effective_runtime_volumes()
+        volumes = self._merge_named(runtime_volumes, [required_work_volume])
 
         pod_spec = {
             "restartPolicy": "Never",
             "containers": [container],
-            "volumes": [
-                {
-                    "name": volume_name,
-                    "persistentVolumeClaim": {"claimName": self.pvc_name},
-                },
-            ],
+            "volumes": volumes,
         }
 
-        if self.service_account_name:
-            pod_spec["serviceAccountName"] = self.service_account_name
+        service_account_name = self._effective_service_account_name()
+        if service_account_name:
+            pod_spec["serviceAccountName"] = service_account_name
 
-        if self.image_pull_secrets:
-            pod_spec["imagePullSecrets"] = [
-                {"name": s} for s in self.image_pull_secrets
-            ]
+        image_pull_secrets = self._effective_image_pull_secrets()
+        if image_pull_secrets:
+            pod_spec["imagePullSecrets"] = image_pull_secrets
 
+        namespace = self._effective_namespace()
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
-            "metadata": {"name": job_name, "namespace": self.namespace},
+            "metadata": {"name": job_name, "namespace": namespace},
             "spec": {
                 "ttlSecondsAfterFinished": self.ttl_seconds_after_finished,
                 "backoffLimit": 0,
@@ -334,19 +471,26 @@ class K8sBackend(Backend):
         # Run mkdir job
         if dirs:
             mkdir_manifest = self._mkdir_job(mkdir_job_name, sorted(dirs))
-            k8s_job = KubernetesJob(namespace=self.namespace, v1_job=mkdir_manifest)
+            k8s_job = KubernetesJob(
+                namespace=mkdir_manifest["metadata"]["namespace"], v1_job=mkdir_manifest
+            )
             await self._run_job(k8s_job, mkdir_job_name, logger)
 
         # Run listings job
         if step.listings:
             listings_manifest = self._listings_job(listings_job_name, step.listings)
-            k8s_job = KubernetesJob(namespace=self.namespace, v1_job=listings_manifest)
-            await self._run_job(k8s_job, mkdir_job_name, logger)
+            k8s_job = KubernetesJob(
+                namespace=listings_manifest["metadata"]["namespace"],
+                v1_job=listings_manifest,
+            )
+            await self._run_job(k8s_job, listings_job_name, logger)
 
         # Run main step job
         step_manifest = self._step_job(step_job_name, step)
-        k8s_job = KubernetesJob(namespace=self.namespace, v1_job=step_manifest)
-        await self._run_job(k8s_job, mkdir_job_name, logger)
+        k8s_job = KubernetesJob(
+            namespace=step_manifest["metadata"]["namespace"], v1_job=step_manifest
+        )
+        await self._run_job(k8s_job, step_job_name, logger)
 
         # Track produced outputs for downstream steps
         for output_port, host_path in step.out_artifacts.items():
