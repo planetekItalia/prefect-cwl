@@ -91,6 +91,12 @@ Shall you want to use *K8s* backend, special requirements apply:
   - `PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME`, for custom service account name (default: `prefect-flow-runner`)
   - `PREFECT_CWL_K8S_PULL_SECRETS`, for custom pull secrets (default: `[]`)
 
+K8s precedence note (deployed runs):
+- `PREFECT_CWL_K8S_*` values are backend defaults.
+- If Prefect work pool/deployment `job_variables` are available at runtime, selected values override defaults for spawned step jobs:
+  - `namespace`, `service_account_name`, `env`, `volumes`, `volume_mounts`, `image_pull_secrets`
+- `PREFECT_CWL_K8S_PVC_NAME` and `PREFECT_CWL_K8S_PVC_MOUNT_PATH` are always enforced by `prefect-cwl` for its required work volume/mount.
+
 For running a local K8s cluster, configured with Prefect and all the above requirements, check the *prefect-k8s-demo* folder.
 
 ## Runtime concurrency controls

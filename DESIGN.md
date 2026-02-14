@@ -371,6 +371,10 @@ async def call_single_step(...):
 - At runtime, spawned CWL step jobs can merge selected Prefect work-pool/deployment `job_variables`
   when available in `flow_run.job_variables`.
 - Supported merged fields: namespace, service account, environment variables, volumes, volume mounts, image pull secrets.
+- Precedence:
+  - `PREFECT_CWL_K8S_*` backend settings are defaults.
+  - Runtime `job_variables` override defaults for supported merged fields.
+  - Required `prefect-cwl` PVC binding stays enforced (`pvc_name` + root `pvc_mount_path` mount).
 - Safety constraints:
   - The required `prefect-cwl` PVC `work` volume and root mount are always enforced.
   - Step-level env values override runtime/template env on key collision.
