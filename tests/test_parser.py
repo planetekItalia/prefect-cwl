@@ -153,3 +153,24 @@ def test_successful_cwl_document_marshalling():
     # Discriminator should produce a CommandLineToolNode instance
     assert isinstance(node, CommandLineToolNode)
     assert node.id == "echo"
+
+
+def test_resource_requirement_subset_is_parsed():
+    req = minimal_requirements(
+        ResourceRequirement={
+            "coresMin": 1,
+            "coresMax": 2,
+            "ramMin": 512,
+            "ramMax": 1024,
+        }
+    )
+    assert req.resource_requirement is not None
+    assert req.resource_requirement.coresMin == 1.0
+    assert req.resource_requirement.coresMax == 2.0
+    assert req.resource_requirement.ramMin == 512
+    assert req.resource_requirement.ramMax == 1024
+
+
+def test_resource_requirement_negative_values_raise():
+    with pytest.raises(ValueError):
+        minimal_requirements(ResourceRequirement={"coresMin": -1})

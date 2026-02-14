@@ -1,15 +1,39 @@
 """Templates for workflow steps and workflows, with materialization logic."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Tuple, Any, Callable, Optional, Union
 
 from prefect_cwl.constants import JOBROOT, INROOT
 from prefect_cwl.exceptions import ValidationError
-from prefect_cwl.models import WorkflowStep, CommandLineToolNode
+from prefect_cwl.models import WorkflowStep, CommandLineToolNode, ResourceRequirement
 
 
 ArtifactPath = Union[Path, List[Path]]
+
+
+@dataclass(frozen=True)
+class StepResources:
+    """Normalized runtime resources extracted from CWL ResourceRequirement."""
+
+    cpu_request: Optional[float] = None
+    cpu_limit: Optional[float] = None
+    memory_request_mb: Optional[int] = None
+    memory_limit_mb: Optional[int] = None
+
+
+def normalize_step_resources(
+    resource_req: Optional[ResourceRequirement],
+) -> StepResources:
+    """Convert CWL ResourceRequirement into executor-oriented resources."""
+    if resource_req is None:
+        return StepResources()
+    return StepResources(
+        cpu_request=resource_req.coresMin,
+        cpu_limit=resource_req.coresMax,
+        memory_request_mb=resource_req.ramMin,
+        memory_limit_mb=resource_req.ramMax,
+    )
 
 
 def step_host_dirs(
@@ -80,6 +104,7 @@ class StepPlan:
     listings: List[ListingMaterialization]
     out_artifacts: Dict[str, Path]  # tool output name -> host path
     envs: Dict[str, str]
+    resources: StepResources = field(default_factory=StepResources)
 
 
 @dataclass
@@ -106,6 +131,7 @@ class StepTemplate:
     image: str
     outdir_container: PurePosixPath
     envs: Dict[str, str]
+    resources: StepResources = field(default_factory=StepResources)
 
     def _compute_base_step_volumes(
         self,
@@ -314,6 +340,7 @@ class StepTemplate:
             listings=mats,
             out_artifacts=out_artifacts,
             envs=self.envs,
+            resources=self.resources,
         )
 
 

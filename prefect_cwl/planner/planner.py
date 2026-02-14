@@ -4,6 +4,7 @@ This module parses a CWL document, builds a dependency graph, and produces
 workflow and step templates. At runtime, templates are materialized into
 concrete execution plans by the selected backend.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,12 +13,18 @@ from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
-from prefect_cwl.planner.templates import StepTemplate, WorkflowTemplate
+from prefect_cwl.planner.templates import (
+    StepTemplate,
+    WorkflowTemplate,
+    normalize_step_resources,
+)
 from prefect_cwl.exceptions import ValidationError
 from prefect_cwl.models import CWLDocument, WorkflowNode, CommandLineToolNode
 
 
-def index_graph(doc: CWLDocument) -> tuple[Dict[str, WorkflowNode], Dict[str, CommandLineToolNode]]:
+def index_graph(
+    doc: CWLDocument,
+) -> tuple[Dict[str, WorkflowNode], Dict[str, CommandLineToolNode]]:
     """Index document graph into workflow and tool maps by id."""
     workflows: Dict[str, WorkflowNode] = {}
     tools: Dict[str, CommandLineToolNode] = {}
@@ -31,7 +38,9 @@ def index_graph(doc: CWLDocument) -> tuple[Dict[str, WorkflowNode], Dict[str, Co
     return workflows, tools
 
 
-def select_workflow(workflows: Dict[str, WorkflowNode], workflow_ref: Optional[str]) -> WorkflowNode:
+def select_workflow(
+    workflows: Dict[str, WorkflowNode], workflow_ref: Optional[str]
+) -> WorkflowNode:
     """Select a workflow by reference or return the sole workflow.
 
     Raises ValidationError if the reference is provided but not found, or if no
@@ -49,12 +58,10 @@ def select_workflow(workflows: Dict[str, WorkflowNode], workflow_ref: Optional[s
     return next(iter(workflows.values()))
 
 
-
-
-
 # -------------------------
 # Planner class
 # -------------------------
+
 
 @dataclass
 class Planner:
@@ -78,7 +85,9 @@ class Planner:
     def _resolve_run_id(self, step_run: str) -> str:
         return step_run[1:] if step_run.startswith("#") else step_run
 
-    def _topo_waves(self, downstream: Dict[str, Set[str]], indegree: Dict[str, int]) -> List[List[str]]:
+    def _topo_waves(
+        self, downstream: Dict[str, Set[str]], indegree: Dict[str, int]
+    ) -> List[List[str]]:
         """Compute topological waves for a DAG.
 
         Nodes with indegree 0 form the first wave; after removing them, repeat.
@@ -107,7 +116,9 @@ class Planner:
 
         return waves
 
-    def _build_dependency_graph(self, wf: WorkflowNode) -> tuple[Dict[str, Set[str]], Dict[str, int]]:
+    def _build_dependency_graph(
+        self, wf: WorkflowNode
+    ) -> tuple[Dict[str, Set[str]], Dict[str, int]]:
         """Build a dependency graph from workflow step inputs.
 
         Returns a tuple of (downstream, indegree) where:
@@ -127,7 +138,6 @@ class Planner:
                         indegree[step_name] += 1
 
         return downstream, indegree
-
 
     def prepare(self, workflow_ref: str) -> WorkflowTemplate:
         """
@@ -151,7 +161,9 @@ class Planner:
             tool_id = self._resolve_run_id(wf_step_value.run)
             clt = tools.get(tool_id)
             if clt is None:
-                raise ValidationError(f"Step {wf_step_name} refers to unknown tool {tool_id!r}")
+                raise ValidationError(
+                    f"Step {wf_step_name} refers to unknown tool {tool_id!r}"
+                )
 
             docker = clt.requirements.docker_requirement
             outdir_container = docker.dockerOutputDirectory
@@ -165,6 +177,9 @@ class Planner:
                 image=image,
                 outdir_container=outdir_container,
                 envs=clt.requirements.env_var_requirement.envDef,
+                resources=normalize_step_resources(
+                    clt.requirements.resource_requirement
+                ),
             )
 
         # Compute workflow output schema (what outputs exist, not their values)
@@ -173,7 +188,9 @@ class Planner:
             src = wf_out.outputSource
             sname, oport = src.split("/", 1)
             if sname not in step_templates:
-                raise ValidationError(f"Workflow output {wf_out_name!r} references unknown step {sname!r}")
+                raise ValidationError(
+                    f"Workflow output {wf_out_name!r} references unknown step {sname!r}"
+                )
             # Store the reference, not the actual path (that comes at runtime)
             wf_output_schema[wf_out_name] = {"source_step": sname, "source_port": oport}
 

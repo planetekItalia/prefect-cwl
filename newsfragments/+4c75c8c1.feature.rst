@@ -1,0 +1,1 @@
+Read processing requirements from the CWL and apply them inside the executors

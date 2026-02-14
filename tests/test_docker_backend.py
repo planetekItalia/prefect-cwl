@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from prefect_cwl.planner.templates import StepPlan, ListingMaterialization
+from prefect_cwl.planner.templates import (
+    StepPlan,
+    ListingMaterialization,
+    StepResources,
+)
 from prefect_cwl.backends.docker import DockerBackend
 
 
@@ -265,3 +269,67 @@ async def test_docker_backend_passes_suffix_and_overrides_to_materialize(
         "job_suffix": "augmenter_input-0",
         "input_overrides": {"augmenter_input": override_dir},
     }
+
+
+@pytest.mark.asyncio
+async def test_docker_backend_maps_resource_limits_to_create_kwargs(
+    tmp_path, monkeypatch
+):
+    outdir = tmp_path / "out"
+    jobdir = tmp_path / "job"
+    plan = StepPlan(
+        step_name="step1",
+        tool_id="tool-1",
+        image="alpine:3.19",
+        argv=["sh", "-lc", "echo hi"],
+        outdir_container=Path("/out"),
+        volumes={str(outdir): "/out:rw", str(jobdir): "/cwl_job:rw"},
+        listings=[],
+        out_artifacts={"o": outdir / "hi.txt"},
+        envs={},
+        resources=StepResources(cpu_limit=1.5, memory_limit_mb=256),
+    )
+    step = DummyStepTemplate("step1", plan)
+
+    calls = {}
+
+    async def fake_pull(repository):
+        return None
+
+    async def fake_to_thread(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return fn(*args, **kwargs)
+
+    async def fake_create(**kwargs):
+        calls["create"] = kwargs
+        return SimpleNamespace(id="cid")
+
+    class FakeContainer:
+        id = "cid"
+
+        def logs(self, stream=False, follow=False, tail=None):  # type: ignore[no-untyped-def]
+            return iter([]) if stream else b""
+
+        def wait(self):
+            return {"StatusCode": 0}
+
+    async def fake_start(container_id):
+        return FakeContainer()
+
+    monkeypatch.setattr("prefect_cwl.backends.docker.pull_docker_image", fake_pull)
+    monkeypatch.setattr(
+        "prefect_cwl.backends.docker.create_docker_container", fake_create
+    )
+    monkeypatch.setattr(
+        "prefect_cwl.backends.docker.start_docker_container", fake_start
+    )
+    monkeypatch.setattr("prefect_cwl.backends.docker.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        DockerBackend, "_stream_logs", staticmethod(lambda *args, **kwargs: None)
+    )
+
+    await DockerBackend().call_single_step(
+        step, workflow_inputs={}, produced={}, workspace=tmp_path
+    )
+
+    assert calls["create"]["nano_cpus"] == 1_500_000_000
+    assert calls["create"]["mem_limit"] == "256m"

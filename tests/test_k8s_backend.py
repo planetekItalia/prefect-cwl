@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from prefect_cwl.backends.k8s import K8sBackend
-from prefect_cwl.planner.templates import StepPlan, ListingMaterialization
+from prefect_cwl.planner.templates import (
+    StepPlan,
+    ListingMaterialization,
+    StepResources,
+)
 
 
 class DummyStepTemplate:
@@ -319,6 +323,66 @@ async def test_k8s_backend_merges_runtime_job_variables(tmp_path, monkeypatch):
     assert env_map["A"] == "step"
     assert env_map["B"] == "step"
     assert env_map["C"] == "runtime"
+
+
+@pytest.mark.asyncio
+async def test_k8s_backend_maps_step_resources_to_container_resources(
+    tmp_path, monkeypatch
+):
+    pvc_root = "/data"
+    outdir = Path(pvc_root) / "runs" / "out"
+    jobdir = Path(pvc_root) / "runs" / "job"
+
+    plan = StepPlan(
+        step_name="s",
+        tool_id="t",
+        image="alpine:3.19",
+        argv=["sh", "-lc", "echo ok"],
+        outdir_container=Path("/out"),
+        volumes={str(outdir): "/out:rw", str(jobdir): "/cwl_job:rw"},
+        listings=[],
+        out_artifacts={"o": outdir / "x.txt"},
+        envs={},
+        resources=StepResources(
+            cpu_request=1,
+            cpu_limit=2,
+            memory_request_mb=512,
+            memory_limit_mb=1024,
+        ),
+    )
+    step = DummyStepTemplate("s", plan)
+
+    submitted = []
+
+    class FakeJobRun:
+        def __init__(self, result=None):
+            self.wait_for_completion = AsyncMock()
+            self.fetch_result = AsyncMock(return_value=result)
+
+    class FakeK8sJob:
+        def __init__(self, namespace, v1_job):
+            self.namespace = namespace
+            self.v1_job = v1_job
+            self._job_run = FakeJobRun(result={"ok": True})
+
+        async def trigger(self):
+            submitted.append(self.v1_job)
+            return self._job_run
+
+    monkeypatch.setattr("prefect_cwl.backends.k8s.KubernetesJob", FakeK8sJob)
+
+    backend = K8sBackend(namespace="ns", pvc_name="pvc", pvc_mount_path=pvc_root)
+    await backend.call_single_step(
+        step, workflow_inputs={}, produced={}, workspace=tmp_path
+    )
+
+    run_job = submitted[-1]
+    container = run_job["spec"]["template"]["spec"]["containers"][0]
+    resources = container["resources"]
+    assert resources["requests"]["cpu"] == "1"
+    assert resources["limits"]["cpu"] == "2"
+    assert resources["requests"]["memory"] == "512Mi"
+    assert resources["limits"]["memory"] == "1024Mi"
 
 
 def test_k8s_merge_effective_values_from_runtime_job_variables(monkeypatch):

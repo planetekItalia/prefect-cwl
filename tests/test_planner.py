@@ -28,6 +28,7 @@ from prefect_cwl.models import (
     InputBinding,
     ToolOutput,
     OutputBinding,
+    ResourceRequirement,
 )
 
 
@@ -47,7 +48,9 @@ def make_tool(
     outdir: PurePosixPath = PurePosixPath("/cwl_job/out"),
 ) -> CommandLineToolNode:
     reqs = Requirements(
-        DockerRequirement=DockerRequirement(dockerPull=image, dockerOutputDirectory=outdir),
+        DockerRequirement=DockerRequirement(
+            dockerPull=image, dockerOutputDirectory=outdir
+        ),
         EnvVarRequirement=EnvVarRequirement(envDef={}),
     )
     return CommandLineToolNode(
@@ -60,7 +63,9 @@ def make_tool(
                 "x": ToolInput(type="string", inputBinding=InputBinding(position=1)),
             },
             "outputs": {
-                "out_file": ToolOutput(type="File", outputBinding=OutputBinding(glob=glob)),
+                "out_file": ToolOutput(
+                    type="File", outputBinding=OutputBinding(glob=glob)
+                ),
             },
         }
     )
@@ -74,8 +79,12 @@ def make_cycle_doc() -> CWLDocument:
             "inputs": {},
             "outputs": {},
             "steps": {
-                "a": WorkflowStep(run="#a", **{"in": {"x": "b/out_file"}}, out=["out_file"]),
-                "b": WorkflowStep(run="#b", **{"in": {"x": "a/out_file"}}, out=["out_file"]),
+                "a": WorkflowStep(
+                    run="#a", **{"in": {"x": "b/out_file"}}, out=["out_file"]
+                ),
+                "b": WorkflowStep(
+                    run="#b", **{"in": {"x": "a/out_file"}}, out=["out_file"]
+                ),
             },
         }
     )
@@ -172,6 +181,57 @@ def test_prepare_cycle_detection(tmp_path: Path):
     with pytest.raises(ValueError, match="Cycle detected|unresolved deps"):
         p.prepare("#main")
 
+
+def test_prepare_maps_resource_requirements_into_step_template(tmp_path: Path):
+    wf = WorkflowNode(
+        **{
+            "class": "Workflow",
+            "id": "#main",
+            "inputs": {"x": WorkflowInput(type="string")},
+            "outputs": {
+                "final": WorkflowOutput(type="File", outputSource="a/out_file")
+            },
+            "steps": {
+                "a": WorkflowStep(run="#a", **{"in": {"x": "x"}}, out=["out_file"]),
+            },
+        }
+    )
+    tool_a = CommandLineToolNode(
+        **{
+            "class": "CommandLineTool",
+            "id": "a",
+            "requirements": Requirements(
+                DockerRequirement=DockerRequirement(
+                    dockerPull="python:3.11",
+                    dockerOutputDirectory=PurePosixPath("/cwl_job/out"),
+                ),
+                EnvVarRequirement=EnvVarRequirement(envDef={}),
+                ResourceRequirement=ResourceRequirement(
+                    coresMin=1, coresMax=2, ramMin=512, ramMax=1024
+                ),
+            ),
+            "baseCommand": "python",
+            "inputs": {
+                "x": ToolInput(type="string", inputBinding=InputBinding(position=1))
+            },
+            "outputs": {
+                "out_file": ToolOutput(
+                    type="File", outputBinding=OutputBinding(glob="a.txt")
+                )
+            },
+        }
+    )
+    doc = CWLDocument(cwlVersion="v1.2", **{"$graph": [wf, tool_a]})
+    p = make_planner(doc, tmp_path)
+
+    tpl = p.prepare("#main")
+    res = tpl.step_templates["a"].resources
+    assert res.cpu_request == 1
+    assert res.cpu_limit == 2
+    assert res.memory_request_mb == 512
+    assert res.memory_limit_mb == 1024
+
+
 def test_prepare_waves_multiple_steps_same_wave(tmp_path: Path):
     wf = WorkflowNode(
         **{
@@ -207,8 +267,14 @@ def test_prepare_waves_multiple_steps_same_wave(tmp_path: Path):
                 EnvVarRequirement=EnvVarRequirement(envDef={}),
             ),
             "baseCommand": "python",
-            "inputs": {"msg": ToolInput(type="string", inputBinding=InputBinding(position=1))},
-            "outputs": {"out_file": ToolOutput(type="File", outputBinding=OutputBinding(glob="a.txt"))},
+            "inputs": {
+                "msg": ToolInput(type="string", inputBinding=InputBinding(position=1))
+            },
+            "outputs": {
+                "out_file": ToolOutput(
+                    type="File", outputBinding=OutputBinding(glob="a.txt")
+                )
+            },
         }
     )
 
@@ -224,8 +290,14 @@ def test_prepare_waves_multiple_steps_same_wave(tmp_path: Path):
                 EnvVarRequirement=EnvVarRequirement(envDef={}),
             ),
             "baseCommand": "python",
-            "inputs": {"msg": ToolInput(type="string", inputBinding=InputBinding(position=1))},
-            "outputs": {"out_file": ToolOutput(type="File", outputBinding=OutputBinding(glob="b.txt"))},
+            "inputs": {
+                "msg": ToolInput(type="string", inputBinding=InputBinding(position=1))
+            },
+            "outputs": {
+                "out_file": ToolOutput(
+                    type="File", outputBinding=OutputBinding(glob="b.txt")
+                )
+            },
         }
     )
 
@@ -245,7 +317,11 @@ def test_prepare_waves_multiple_steps_same_wave(tmp_path: Path):
                 "from_a": ToolInput(type="File", inputBinding=InputBinding(position=1)),
                 "from_b": ToolInput(type="File", inputBinding=InputBinding(position=2)),
             },
-            "outputs": {"out_file": ToolOutput(type="File", outputBinding=OutputBinding(glob="c.txt"))},
+            "outputs": {
+                "out_file": ToolOutput(
+                    type="File", outputBinding=OutputBinding(glob="c.txt")
+                )
+            },
         }
     )
 
@@ -256,4 +332,3 @@ def test_prepare_waves_multiple_steps_same_wave(tmp_path: Path):
 
     # topo_waves sorts wave elements, so we expect alphabetical ordering
     assert tpl.waves == [["a", "b"], ["c"]]
-

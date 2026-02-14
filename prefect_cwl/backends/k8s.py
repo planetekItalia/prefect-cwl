@@ -17,7 +17,12 @@ from prefect_kubernetes import KubernetesJob
 from prefect.context import get_run_context
 from prefect.exceptions import MissingContextError
 
-from prefect_cwl.planner.templates import StepPlan, ListingMaterialization, StepTemplate
+from prefect_cwl.planner.templates import (
+    StepPlan,
+    ListingMaterialization,
+    StepTemplate,
+    StepResources,
+)
 from prefect_cwl.planner.templates import ArtifactPath
 from prefect_cwl.backends.base import Backend
 from prefect_cwl.io import build_command_and_listing
@@ -123,6 +128,7 @@ class K8sBackend(Backend):
             listings=mapped_listings,
             out_artifacts=mapped_out,
             envs=step.envs,
+            resources=step.resources,
         )
 
     def _k8s_name(self, s: str, max_len: int = 63) -> str:
@@ -396,8 +402,35 @@ class K8sBackend(Backend):
             "env": [{"name": k, "value": v} for k, v in (step.envs or {}).items()],
             "workingDir": str(step.outdir_container),
         }
+        resources = self._k8s_container_resources(step.resources)
+        if resources:
+            container_spec["resources"] = resources
 
         return self._base_job_manifest(job_name, container_spec=container_spec)
+
+    @staticmethod
+    def _k8s_container_resources(
+        step_resources: StepResources,
+    ) -> Dict[str, Dict[str, str]]:
+        """Map normalized resources into Kubernetes container resources."""
+        requests: Dict[str, str] = {}
+        limits: Dict[str, str] = {}
+
+        if step_resources.cpu_request is not None:
+            requests["cpu"] = str(step_resources.cpu_request)
+        if step_resources.cpu_limit is not None:
+            limits["cpu"] = str(step_resources.cpu_limit)
+        if step_resources.memory_request_mb is not None:
+            requests["memory"] = f"{int(step_resources.memory_request_mb)}Mi"
+        if step_resources.memory_limit_mb is not None:
+            limits["memory"] = f"{int(step_resources.memory_limit_mb)}Mi"
+
+        out: Dict[str, Dict[str, str]] = {}
+        if requests:
+            out["requests"] = requests
+        if limits:
+            out["limits"] = limits
+        return out
 
     async def _run_job(
         self, k8s_job: KubernetesJob, step_job_name: str, logger: Logger

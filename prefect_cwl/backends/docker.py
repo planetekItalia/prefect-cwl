@@ -14,7 +14,11 @@ from typing import List, Dict, Any, Tuple, Optional
 from prefect_docker.containers import create_docker_container, start_docker_container
 from prefect_docker.images import pull_docker_image
 
-from prefect_cwl.planner.templates import StepTemplate, ListingMaterialization
+from prefect_cwl.planner.templates import (
+    StepTemplate,
+    ListingMaterialization,
+    StepResources,
+)
 from prefect_cwl.planner.templates import ArtifactPath
 from prefect_cwl.backends.base import Backend
 from prefect_cwl.exceptions import ValidationError
@@ -160,6 +164,9 @@ class DockerBackend(Backend):
             logger.info("Docker step: %s image=%s", job_name, step_plan.image)
             logger.info("Command: %s", shlex.join(step_plan.argv))
             logger.info("Volumes: %s", volume_args)
+            resource_kwargs = self._docker_resource_create_kwargs(step_plan.resources)
+            if resource_kwargs:
+                logger.info("Resources: %s", resource_kwargs)
 
             user = None
             if hasattr(os, "getuid"):
@@ -173,6 +180,7 @@ class DockerBackend(Backend):
                 volumes=volume_args,
                 environment=step_plan.envs,
                 user=user,
+                **resource_kwargs,
             )
 
             container = await start_docker_container(container_id=container.id)
@@ -206,3 +214,30 @@ class DockerBackend(Backend):
         )
         for output_port, host_path in out_artifacts.items():
             produced[(step_template.step_name, output_port)] = host_path
+
+    @staticmethod
+    def _docker_resource_create_kwargs(step_resources: StepResources) -> Dict[str, Any]:
+        """Map normalized resources into docker create kwargs.
+
+        - CPU is applied as ``nano_cpus`` (hard cap).
+        - Memory is applied as ``mem_limit`` in MiB.
+        """
+        out: Dict[str, Any] = {}
+
+        cpu_limit = (
+            step_resources.cpu_limit
+            if step_resources.cpu_limit is not None
+            else step_resources.cpu_request
+        )
+        if cpu_limit is not None:
+            out["nano_cpus"] = int(float(cpu_limit) * 1_000_000_000)
+
+        mem_limit_mb = (
+            step_resources.memory_limit_mb
+            if step_resources.memory_limit_mb is not None
+            else step_resources.memory_request_mb
+        )
+        if mem_limit_mb is not None:
+            out["mem_limit"] = f"{int(mem_limit_mb)}m"
+
+        return out

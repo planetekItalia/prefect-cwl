@@ -74,6 +74,33 @@ class InitialWorkDirRequirement(BaseModel):
     listing: List[Listing] = Field(default_factory=list)
 
 
+class ResourceRequirement(BaseModel):
+    """Subset of CWL ResourceRequirement supported by prefect-cwl."""
+
+    coresMin: Optional[float] = None
+    coresMax: Optional[float] = None
+    ramMin: Optional[int] = None
+    ramMax: Optional[int] = None
+
+    @field_validator("coresMin", "coresMax")
+    @classmethod
+    def cpu_must_be_positive(cls, v: Optional[float]) -> Optional[float]:
+        if v is None:
+            return None
+        if v <= 0:
+            raise ValueError("CPU values must be > 0")
+        return float(v)
+
+    @field_validator("ramMin", "ramMax")
+    @classmethod
+    def ram_must_be_positive(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return None
+        if v <= 0:
+            raise ValueError("RAM values must be > 0")
+        return int(v)
+
+
 class Requirements(BaseModel):
     """CWL Requirements."""
 
@@ -85,6 +112,9 @@ class Requirements(BaseModel):
     )
     initial_workdir_requirement: Optional[InitialWorkDirRequirement] = Field(
         default=InitialWorkDirRequirement(), alias="InitialWorkDirRequirement"
+    )
+    resource_requirement: Optional[ResourceRequirement] = Field(
+        default=None, alias="ResourceRequirement"
     )
 
 
