@@ -4,8 +4,8 @@ from pathlib import PurePosixPath
 import pytest
 
 from prefect_cwl.constants import JOBROOT, INROOT
-from models import CWLDocument
-from models import (
+from prefect_cwl.models import CWLDocument
+from prefect_cwl.models import (
     CommandLineToolNode,
     Requirements,
     DockerRequirement,

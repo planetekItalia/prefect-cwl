@@ -66,7 +66,6 @@ class K8sBackend(Backend):
         self.service_account_name = service_account_name
         self.image_pull_secrets = image_pull_secrets or []
         self.ttl_seconds_after_finished = ttl_seconds_after_finished
-        self._runtime_job_variables_cache: Optional[Dict[str, Any]] = None
 
     # ------------------------
     # Helpers
@@ -150,19 +149,14 @@ class K8sBackend(Backend):
         On deployed runs, this may include values rendered from the work pool base
         job template (for example namespace, service account, env, volumes).
         """
-        if self._runtime_job_variables_cache is not None:
-            return self._runtime_job_variables_cache
-
         try:
             ctx = get_run_context()
         except MissingContextError:
-            self._runtime_job_variables_cache = {}
-            return self._runtime_job_variables_cache
+            return {}
 
         flow_run = getattr(ctx, "flow_run", None)
         raw = getattr(flow_run, "job_variables", None)
-        self._runtime_job_variables_cache = raw if isinstance(raw, dict) else {}
-        return self._runtime_job_variables_cache
+        return raw if isinstance(raw, dict) else {}
 
     def _effective_namespace(self) -> str:
         runtime_vars = self._runtime_job_variables()

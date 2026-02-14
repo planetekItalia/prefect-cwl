@@ -85,6 +85,7 @@ class ResourceRequirement(BaseModel):
     @field_validator("coresMin", "coresMax")
     @classmethod
     def cpu_must_be_positive(cls, v: Optional[float]) -> Optional[float]:
+        """Validate that CPU resource values are strictly positive."""
         if v is None:
             return None
         if v <= 0:
@@ -94,6 +95,7 @@ class ResourceRequirement(BaseModel):
     @field_validator("ramMin", "ramMax")
     @classmethod
     def ram_must_be_positive(cls, v: Optional[int]) -> Optional[int]:
+        """Validate that RAM resource values are strictly positive."""
         if v is None:
             return None
         if v <= 0:
