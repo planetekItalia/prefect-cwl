@@ -367,6 +367,15 @@ async def call_single_step(...):
 - `subPath` has known limitations (no symlinks, permission issues)
 - Sequential job execution adds overhead (could be optimized by merging mkdir + listings)
 
+**Work Pool Template Merge (K8s Only):**
+- At runtime, spawned CWL step jobs can merge selected Prefect work-pool/deployment `job_variables`
+  when available in `flow_run.job_variables`.
+- Supported merged fields: namespace, service account, environment variables, volumes, volume mounts, image pull secrets.
+- Safety constraints:
+  - The required `prefect-cwl` PVC `work` volume and root mount are always enforced.
+  - Step-level env values override runtime/template env on key collision.
+  - If no run context/job variables exist (e.g. local runs), backend defaults are used.
+
 ---
 
 ## Data Flow

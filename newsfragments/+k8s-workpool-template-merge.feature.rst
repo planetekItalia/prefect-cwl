@@ -1,0 +1,1 @@
+Kubernetes backend now merges selected Prefect work-pool/deployment job variables into spawned CWL step jobs at runtime (namespace, service account, env, volumes, volume mounts, and image pull secrets), while preserving required ``prefect-cwl`` PVC constraints.

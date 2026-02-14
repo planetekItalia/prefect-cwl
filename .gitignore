@@ -18,3 +18,5 @@ wheels/
 /prefect-k8s-demo/local-k8s-updated.json
 /prefect-k8s-demo/prefect.yaml
 /sample_cwl/ndvi/processor/
+
+/sample_cwl/ndvi/ndvi-sample-processor/

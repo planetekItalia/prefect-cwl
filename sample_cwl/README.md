@@ -4,6 +4,11 @@ This directory contains some sample CWLs aimed at demonstrating how this library
 You can analyze how this CWL has been created to know what this library supports, in practice.
 Move to the specific directory, then run the *python* script inside.
 If you pick the *K8s* version, be sure you got your *KUBECONFIG* env variable correctly pointing to your cluster.
+For Kubernetes runs deployed through a Prefect work pool, `prefect-cwl` supports
+runtime merge of worker/job-template variables into spawned CWL step jobs
+(`namespace`, `serviceAccountName`, `volumes`, `volumeMounts`, and `env`), with
+`prefect-cwl` required PVC constraints preserved. This merge behavior is **K8s only**.
+See `DESIGN.md` for the detailed behavior and precedence rules.
 
 At the current time we have:
 
