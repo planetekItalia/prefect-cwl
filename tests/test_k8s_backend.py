@@ -297,11 +297,11 @@ async def test_k8s_backend_merges_runtime_job_variables(tmp_path, monkeypatch):
     run_job = submitted[-1][1]
     run_ns = submitted[-1][0]
 
-    assert run_ns == "pool-ns"
-    assert run_job["metadata"]["namespace"] == "pool-ns"
+    assert run_ns == "default-ns"
+    assert run_job["metadata"]["namespace"] == "default-ns"
 
     pod_spec = run_job["spec"]["template"]["spec"]
-    assert pod_spec["serviceAccountName"] == "pool-sa"
+    assert pod_spec["serviceAccountName"] == "default-sa"
 
     # Ensure runtime volumes are included and required work volume is preserved
     volumes = {v["name"]: v for v in pod_spec["volumes"]}
@@ -406,11 +406,135 @@ def test_k8s_merge_effective_values_from_runtime_job_variables(monkeypatch):
         image_pull_secrets=["local-secret"],
     )
 
-    assert backend._effective_namespace() == "runtime-ns"
-    assert backend._effective_service_account_name() == "runtime-sa"
+    assert backend._effective_namespace() == "default-ns"
+    assert backend._effective_service_account_name() == "default-sa"
     pull_secrets = backend._effective_image_pull_secrets()
     names = sorted([x["name"] for x in pull_secrets])
-    assert names == ["local-secret", "regcred-a", "regcred-b"]
+    assert names == ["local-secret"]
+
+
+def test_k8s_hierarchy_template_defaults_then_runtime_then_local_overrides(monkeypatch):
+    job_template = {
+        "variables": {
+            "type": "object",
+            "properties": {
+                "namespace": {"type": "string", "default": "tpl-ns"},
+                "service_account_name": {"type": "string", "default": "tpl-sa"},
+                "finished_job_ttl": {"type": "integer", "default": 30},
+                "image_pull_policy": {"type": "string", "default": "IfNotPresent"},
+                "labels": {
+                    "type": "object",
+                    "default": {"layer": "template"},
+                },
+            },
+        },
+        "job_configuration": {
+            "namespace": "{{ namespace }}",
+            "labels": "{{ labels }}",
+            "job_manifest": {
+                "spec": {
+                    "ttlSecondsAfterFinished": "{{ finished_job_ttl }}",
+                    "template": {
+                        "spec": {
+                            "serviceAccountName": "{{ service_account_name }}",
+                            "imagePullSecrets": [{"name": "tpl-secret"}],
+                            "volumes": [{"name": "tpl-cache", "emptyDir": {}}],
+                            "containers": [
+                                {
+                                    "env": [{"name": "TPL_ENV", "value": "1"}],
+                                    "volumeMounts": [
+                                        {
+                                            "name": "tpl-cache",
+                                            "mountPath": "/tpl-cache",
+                                        }
+                                    ],
+                                    "imagePullPolicy": "{{ image_pull_policy }}",
+                                }
+                            ],
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+    class FakeRunContext:
+        class _FlowRun:
+            job_variables = {
+                "job_template": job_template,
+                "job_variables": {
+                    "namespace": "runtime-ns",
+                    "finished_job_ttl": 60,
+                    "labels": {"layer": "runtime"},
+                },
+            }
+
+        flow_run = _FlowRun()
+
+    monkeypatch.setattr(
+        "prefect_cwl.backends.k8s.get_run_context", lambda: FakeRunContext()
+    )
+
+    backend = K8sBackend(
+        namespace="user-ns",
+        job_variables={"labels": {"layer": "user"}},
+    )
+
+    assert backend._effective_namespace() == "user-ns"
+    assert backend._effective_service_account_name() == "tpl-sa"
+    assert backend._effective_finished_job_ttl() == 60
+    assert backend._effective_labels() == {"layer": "user"}
+
+    manifest = backend._base_job_manifest(
+        "x",
+        {
+            "image": "alpine:3.19",
+            "command": ["sh", "-lc", "true"],
+            "env": [],
+            "volumeMounts": [],
+        },
+    )
+    pod_spec = manifest["spec"]["template"]["spec"]
+    container = pod_spec["containers"][0]
+    assert manifest["metadata"]["namespace"] == "user-ns"
+    assert manifest["metadata"]["labels"] == {"layer": "user"}
+    assert manifest["spec"]["ttlSecondsAfterFinished"] == 60
+    assert pod_spec["serviceAccountName"] == "tpl-sa"
+    assert container["imagePullPolicy"] == "IfNotPresent"
+    assert any(v.get("name") == "tpl-cache" for v in pod_spec["volumes"])
+    assert any(
+        m.get("name") == "tpl-cache" and m.get("mountPath") == "/tpl-cache"
+        for m in container["volumeMounts"]
+    )
+
+
+def test_k8s_template_env_defaults_apply_when_no_runtime_or_local_env(monkeypatch):
+    job_template = {
+        "variables": {
+            "type": "object",
+            "properties": {
+                "env": {"type": "object", "default": {"A": "from-template"}}
+            },
+        },
+        "job_configuration": {},
+    }
+
+    class FakeRunContext:
+        class _FlowRun:
+            job_variables = {
+                "job_template": job_template,
+                "job_variables": {},
+            }
+
+        flow_run = _FlowRun()
+
+    monkeypatch.setattr(
+        "prefect_cwl.backends.k8s.get_run_context", lambda: FakeRunContext()
+    )
+    backend = K8sBackend()
+    env = backend._effective_runtime_env()
+    env_map = {item["name"]: item["value"] for item in env}
+    assert env_map["A"] == "from-template"
 
 
 def test_k8s_merge_env_precedence_step_overrides_runtime():

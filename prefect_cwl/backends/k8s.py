@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import uuid
+import copy
 from logging import Logger
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
@@ -37,18 +38,14 @@ class K8sBackend(Backend):
 
     def __init__(
         self,
-        namespace: str = os.environ.get("PREFECT_CWL_K8S_NAMESPACE", "prefect"),
-        pvc_name: str = os.environ.get(
-            "PREFECT_CWL_K8S_PVC_NAME", "prefect-shared-pvc"
-        ),
-        pvc_mount_path: str = os.environ.get("PREFECT_CWL_K8S_PVC_MOUNT_PATH", "/data"),
-        service_account_name: str = os.environ.get(
-            "PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME", "prefect-flow-runner"
-        ),
-        image_pull_secrets: List[str] = os.environ.get(
-            "PREFECT_CWL_K8S_PULL_SECRETS", None
-        ),
-        ttl_seconds_after_finished: int = 3600,
+        namespace: Optional[str] = None,
+        pvc_name: Optional[str] = None,
+        pvc_mount_path: Optional[str] = None,
+        service_account_name: Optional[str] = None,
+        image_pull_secrets: Optional[List[str]] = None,
+        ttl_seconds_after_finished: Optional[int] = None,
+        job_template: Optional[Dict[str, Any]] = None,
+        job_variables: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize the backend.
 
@@ -60,12 +57,46 @@ class K8sBackend(Backend):
             image_pull_secrets (List[str], optional): List of image pull secrets to use. Defaults to None.
             ttl_seconds_after_finished (int, optional): TTL for finished jobs. Defaults to 3600.
         """
-        self.namespace = namespace
-        self.pvc_name = pvc_name
-        self.pvc_mount_path = pvc_mount_path
-        self.service_account_name = service_account_name
-        self.image_pull_secrets = image_pull_secrets or []
-        self.ttl_seconds_after_finished = ttl_seconds_after_finished
+        self._namespace_has_user_override = bool(
+            namespace is not None or os.environ.get("PREFECT_CWL_K8S_NAMESPACE")
+        )
+        self._service_account_has_user_override = bool(
+            service_account_name is not None
+            or os.environ.get("PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME")
+        )
+        self._pull_secrets_has_user_override = bool(
+            image_pull_secrets is not None or os.environ.get("PREFECT_CWL_K8S_PULL_SECRETS")
+        )
+        self._ttl_has_user_override = ttl_seconds_after_finished is not None
+
+        self.namespace = namespace or os.environ.get("PREFECT_CWL_K8S_NAMESPACE", "prefect")
+        self.pvc_name = pvc_name or os.environ.get(
+            "PREFECT_CWL_K8S_PVC_NAME", "prefect-shared-pvc"
+        )
+        self.pvc_mount_path = pvc_mount_path or os.environ.get(
+            "PREFECT_CWL_K8S_PVC_MOUNT_PATH", "/data"
+        )
+        self.service_account_name = service_account_name or os.environ.get(
+            "PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME", "prefect-flow-runner"
+        )
+
+        env_pull_secrets = os.environ.get("PREFECT_CWL_K8S_PULL_SECRETS", "")
+        if image_pull_secrets is not None:
+            self.image_pull_secrets = list(image_pull_secrets)
+        elif env_pull_secrets.strip():
+            self.image_pull_secrets = [
+                item.strip() for item in env_pull_secrets.split(",") if item.strip()
+            ]
+        else:
+            self.image_pull_secrets = []
+
+        self.ttl_seconds_after_finished = (
+            int(ttl_seconds_after_finished)
+            if ttl_seconds_after_finished is not None
+            else 3600
+        )
+        self.job_template = copy.deepcopy(job_template) if job_template else None
+        self.job_variables = copy.deepcopy(job_variables) if job_variables else {}
 
     # ------------------------
     # Helpers
@@ -158,21 +189,176 @@ class K8sBackend(Backend):
         raw = getattr(flow_run, "job_variables", None)
         return raw if isinstance(raw, dict) else {}
 
+    @staticmethod
+    def _render_template_expr(value: Any, variables: Dict[str, Any]) -> Any:
+        """Render simple Jinja-like scalar template placeholders '{{ var }}'."""
+        if isinstance(value, str):
+            match = re.match(r"^\s*\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}\s*$", value)
+            if match:
+                return variables.get(match.group(1))
+            return value
+        if isinstance(value, list):
+            return [K8sBackend._render_template_expr(item, variables) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: K8sBackend._render_template_expr(item, variables)
+                for key, item in value.items()
+            }
+        return value
+
+    def _extract_template_defaults(self, template: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract mergeable defaults from a Prefect worker base job template."""
+        merged_defaults: Dict[str, Any] = {}
+        variables = (
+            template.get("variables", {}).get("properties", {})
+            if isinstance(template.get("variables"), dict)
+            else {}
+        )
+
+        var_defaults: Dict[str, Any] = {}
+        for key, spec in variables.items():
+            if isinstance(spec, dict) and "default" in spec:
+                var_defaults[key] = spec.get("default")
+
+        merged_defaults.update(var_defaults)
+
+        job_conf = template.get("job_configuration", {})
+        if isinstance(job_conf, dict):
+            resolved = self._render_template_expr(job_conf, var_defaults)
+            if isinstance(resolved.get("namespace"), str):
+                merged_defaults["namespace"] = resolved.get("namespace")
+            if isinstance(resolved.get("labels"), dict):
+                merged_defaults["labels"] = resolved.get("labels")
+            if "finished_job_ttl" in resolved:
+                merged_defaults["finished_job_ttl"] = resolved.get("finished_job_ttl")
+            if "image_pull_policy" in resolved:
+                merged_defaults["image_pull_policy"] = resolved.get("image_pull_policy")
+
+            job_manifest = resolved.get("job_manifest", {})
+            if isinstance(job_manifest, dict):
+                manifest_meta = job_manifest.get("metadata", {})
+                if isinstance(manifest_meta, dict) and isinstance(
+                    manifest_meta.get("labels"), dict
+                ):
+                    merged_defaults["labels"] = manifest_meta.get("labels")
+
+                manifest_spec = job_manifest.get("spec", {})
+                if isinstance(manifest_spec, dict):
+                    if "ttlSecondsAfterFinished" in manifest_spec:
+                        merged_defaults["finished_job_ttl"] = manifest_spec.get(
+                            "ttlSecondsAfterFinished"
+                        )
+                    pod_spec = (
+                        manifest_spec.get("template", {}).get("spec", {})
+                        if isinstance(manifest_spec.get("template"), dict)
+                        else {}
+                    )
+                    if isinstance(pod_spec, dict):
+                        if isinstance(pod_spec.get("serviceAccountName"), str):
+                            merged_defaults["service_account_name"] = pod_spec.get(
+                                "serviceAccountName"
+                            )
+                        if isinstance(pod_spec.get("imagePullSecrets"), list):
+                            merged_defaults["image_pull_secrets"] = pod_spec.get(
+                                "imagePullSecrets"
+                            )
+                        if isinstance(pod_spec.get("volumes"), list):
+                            merged_defaults["volumes"] = pod_spec.get("volumes")
+
+                        containers = pod_spec.get("containers", [])
+                        if isinstance(containers, list) and containers:
+                            first = containers[0]
+                            if isinstance(first, dict):
+                                if isinstance(first.get("env"), list):
+                                    merged_defaults["env"] = first.get("env")
+                                if isinstance(first.get("volumeMounts"), list):
+                                    merged_defaults["volume_mounts"] = first.get(
+                                        "volumeMounts"
+                                    )
+                                if isinstance(first.get("imagePullPolicy"), str):
+                                    merged_defaults["image_pull_policy"] = first.get(
+                                        "imagePullPolicy"
+                                    )
+
+        return merged_defaults
+
+    @staticmethod
+    def _prune_template_transport_keys(values: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            key: value
+            for key, value in values.items()
+            if key
+            not in {
+                "job_template",
+                "base_job_template",
+                "template",
+                "infrastructure_template",
+                "default_job_template",
+            }
+        }
+
+    def _effective_job_variables(self) -> Dict[str, Any]:
+        """Resolved merge: template defaults -> runtime job_variables -> local overrides."""
+        runtime_raw = self._runtime_job_variables()
+        template = None
+        for key in (
+            "job_template",
+            "base_job_template",
+            "template",
+            "infrastructure_template",
+            "default_job_template",
+        ):
+            candidate = runtime_raw.get(key)
+            if isinstance(candidate, dict):
+                template = candidate
+                break
+        if template is None and isinstance(self.job_template, dict):
+            template = self.job_template
+
+        runtime_vars = runtime_raw.get("job_variables")
+        if isinstance(runtime_vars, dict):
+            runtime_values = runtime_vars
+        else:
+            runtime_values = runtime_raw
+        runtime_values = self._prune_template_transport_keys(runtime_values)
+
+        merged: Dict[str, Any] = {}
+        if isinstance(template, dict):
+            merged.update(self._extract_template_defaults(template))
+        merged.update(runtime_values)
+        merged.update(self.job_variables)
+        merged.update(self._local_user_overrides())
+        return merged
+
+    def _local_user_overrides(self) -> Dict[str, Any]:
+        overrides: Dict[str, Any] = {}
+        if self._namespace_has_user_override:
+            overrides["namespace"] = self.namespace
+        if self._service_account_has_user_override:
+            overrides["service_account_name"] = self.service_account_name
+        if self._pull_secrets_has_user_override:
+            overrides["image_pull_secrets"] = self.image_pull_secrets
+        if self._ttl_has_user_override:
+            overrides["finished_job_ttl"] = self.ttl_seconds_after_finished
+        return overrides
+
     def _effective_namespace(self) -> str:
-        runtime_vars = self._runtime_job_variables()
-        namespace = runtime_vars.get("namespace")
+        merged_vars = self._effective_job_variables()
+        namespace = merged_vars.get("namespace")
         return str(namespace).strip() if namespace else self.namespace
 
     def _effective_service_account_name(self) -> Optional[str]:
-        runtime_vars = self._runtime_job_variables()
-        service_account_name = runtime_vars.get("service_account_name")
+        merged_vars = self._effective_job_variables()
+        service_account_name = merged_vars.get("service_account_name")
         if service_account_name:
             return str(service_account_name).strip()
         return self.service_account_name
 
     def _effective_image_pull_secrets(self) -> List[dict]:
-        runtime_vars = self._runtime_job_variables()
-        runtime_pull_secrets = runtime_vars.get("image_pull_secrets", [])
+        merged_vars = self._effective_job_variables()
+        runtime_pull_secrets = merged_vars.get(
+            "image_pull_secrets", merged_vars.get("imagePullSecrets", [])
+        )
 
         merged: Dict[str, dict] = {}
         for secret_name in self.image_pull_secrets:
@@ -191,8 +377,8 @@ class K8sBackend(Backend):
         return list(merged.values())
 
     def _effective_runtime_env(self) -> List[dict]:
-        runtime_vars = self._runtime_job_variables()
-        runtime_env = runtime_vars.get("env", {})
+        merged_vars = self._effective_job_variables()
+        runtime_env = merged_vars.get("env", {})
 
         env_entries: List[dict] = []
         if isinstance(runtime_env, dict):
@@ -207,8 +393,8 @@ class K8sBackend(Backend):
         return env_entries
 
     def _effective_runtime_volume_mounts(self) -> List[dict]:
-        runtime_vars = self._runtime_job_variables()
-        mounts = runtime_vars.get("volume_mounts", runtime_vars.get("volumeMounts", []))
+        merged_vars = self._effective_job_variables()
+        mounts = merged_vars.get("volume_mounts", merged_vars.get("volumeMounts", []))
         if not isinstance(mounts, list):
             return []
         out: List[dict] = []
@@ -218,8 +404,8 @@ class K8sBackend(Backend):
         return out
 
     def _effective_runtime_volumes(self) -> List[dict]:
-        runtime_vars = self._runtime_job_variables()
-        volumes = runtime_vars.get("volumes", [])
+        merged_vars = self._effective_job_variables()
+        volumes = merged_vars.get("volumes", [])
         if not isinstance(volumes, list):
             return []
         out: List[dict] = []
@@ -264,6 +450,38 @@ class K8sBackend(Backend):
                     merged[name] = dict(item)
         return list(merged.values())
 
+    def _effective_finished_job_ttl(self) -> Optional[int]:
+        merged_vars = self._effective_job_variables()
+        ttl = merged_vars.get("finished_job_ttl")
+        if ttl is None:
+            return self.ttl_seconds_after_finished
+        try:
+            return int(ttl)
+        except (TypeError, ValueError):
+            return self.ttl_seconds_after_finished
+
+    def _effective_image_pull_policy(self) -> Optional[str]:
+        merged_vars = self._effective_job_variables()
+        value = merged_vars.get("image_pull_policy")
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    def _effective_labels(self) -> Dict[str, str]:
+        merged_vars = self._effective_job_variables()
+        labels = merged_vars.get("labels")
+        if not isinstance(labels, dict):
+            return {}
+        out: Dict[str, str] = {}
+        for key, value in labels.items():
+            if value is None:
+                continue
+            out[str(key)] = str(value)
+        return out
+
     # ------------------------
     # Job builders
     # ------------------------
@@ -283,6 +501,10 @@ class K8sBackend(Backend):
 
         runtime_env = self._effective_runtime_env()
         merged_env = self._merge_env(runtime_env, list(container_spec.get("env", [])))
+        image_pull_policy = self._effective_image_pull_policy()
+        if image_pull_policy and not container_spec.get("imagePullPolicy"):
+            container_spec["imagePullPolicy"] = image_pull_policy
+
         container = {
             "name": "main",
             **container_spec,
@@ -312,15 +534,24 @@ class K8sBackend(Backend):
             pod_spec["imagePullSecrets"] = image_pull_secrets
 
         namespace = self._effective_namespace()
+        metadata = {"name": job_name, "namespace": namespace}
+        labels = self._effective_labels()
+        if labels:
+            metadata["labels"] = labels
+
+        job_spec: Dict[str, Any] = {
+            "backoffLimit": 0,
+            "template": {"spec": pod_spec},
+        }
+        ttl = self._effective_finished_job_ttl()
+        if ttl is not None:
+            job_spec["ttlSecondsAfterFinished"] = ttl
+
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
-            "metadata": {"name": job_name, "namespace": namespace},
-            "spec": {
-                "ttlSecondsAfterFinished": self.ttl_seconds_after_finished,
-                "backoffLimit": 0,
-                "template": {"spec": pod_spec},
-            },
+            "metadata": metadata,
+            "spec": job_spec,
         }
 
     def _mkdir_job(self, job_name: str, dirs: List[str]) -> dict:
