@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -609,3 +610,9 @@ def test_k8s_base_job_manifest_without_runtime_context_uses_backend_defaults(
         m.get("name") == "work" and m.get("mountPath") == "/data"
         for m in container["volumeMounts"]
     )
+
+
+def test_k8s_backend_log_level_coercion():
+    backend = K8sBackend(log_level="warning", stream_log_level="20")
+    assert backend.log_level == logging.WARNING
+    assert backend.stream_log_level == logging.INFO

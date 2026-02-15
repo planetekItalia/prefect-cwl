@@ -90,12 +90,20 @@ Shall you want to use *K8s* backend, special requirements apply:
   - `PREFECT_CWL_K8S_PVC_MOUNT_PATH`, for custom PVC mount path (default: `/data`)
   - `PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME`, for custom service account name (default: `prefect-flow-runner`)
   - `PREFECT_CWL_K8S_PULL_SECRETS`, for custom pull secrets (default: `[]`)
+  - `PREFECT_CWL_K8S_LOG_LEVEL`, for step summary log level (default: `INFO`)
+  - `PREFECT_CWL_K8S_STREAM_LOG_LEVEL`, for streamed job output log level (default: `DEBUG`)
 
 K8s precedence note (deployed runs):
-- `PREFECT_CWL_K8S_*` values are backend defaults.
-- If Prefect work pool/deployment `job_variables` are available at runtime, selected values override defaults for spawned step jobs:
-  - `namespace`, `service_account_name`, `env`, `volumes`, `volume_mounts`, `image_pull_secrets`
+- Merge order for supported keys is:
+  - Prefect base job-template defaults (including `variables.properties.*.default`, when a template is available)
+  - runtime `flow_run.job_variables`
+  - local/backend overrides (constructor args, `PREFECT_CWL_K8S_*`, and optional `job_variables` passed to `K8sBackend`)
+- Important: local/backend explicit overrides always win when present; fallback defaults are used only when a value is not provided by template/runtime/explicit override.
+- Supported merged fields include:
+  - `namespace`, `service_account_name`, `env`, `volumes`, `volume_mounts`/`volumeMounts`, `image_pull_secrets`, `labels`, `finished_job_ttl`, `image_pull_policy`
 - `PREFECT_CWL_K8S_PVC_NAME` and `PREFECT_CWL_K8S_PVC_MOUNT_PATH` are always enforced by `prefect-cwl` for its required work volume/mount.
+- `PREFECT_CWL_K8S_PVC_MOUNT_PATH` is the authoritative in-container root used by `prefect-cwl` to create per-run data directories in the shared PVC.
+- For deployed runs, you can control `prefect-cwl` log verbosity at deployment level by setting those env vars in worker/work-pool `job_variables.env`.
 
 For running a local K8s cluster, configured with Prefect and all the above requirements, check the *prefect-k8s-demo* folder.
 

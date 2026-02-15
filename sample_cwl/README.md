@@ -9,6 +9,8 @@ runtime merge of worker/job-template variables into spawned CWL step jobs
 (`namespace`, `serviceAccountName`, `volumes`, `volumeMounts`, and `env`), with
 `prefect-cwl` required PVC constraints preserved. This merge behavior is **K8s only**.
 See `DESIGN.md` for the detailed behavior and precedence rules.
+`PREFECT_CWL_K8S_PVC_MOUNT_PATH` is the canonical in-container root used by `prefect-cwl` for run workspace creation on the shared PVC.
+You can tune backend verbosity per deployment by setting `PREFECT_CWL_K8S_LOG_LEVEL` / `PREFECT_CWL_K8S_STREAM_LOG_LEVEL` in deployment/work-pool env.
 
 At the current time we have:
 
@@ -35,6 +37,7 @@ At the current time we have:
   - Prefect deploy examples:
     - Local serve: `random_grep_count/random_grepper_counter_serve.py`
     - K8s serve: `random_grep_count/random_grepper_counter_serve_k8s.py`
+    - Embeddable image + manual deploy job: `random_grep_count/scatter_k8s_image/`
 - *Multiple Input Checker*: Test all the inputs supported by the adapter and persist them to a file
   - To run workflow cwl execute
   ```bash

@@ -372,11 +372,14 @@ async def call_single_step(...):
   when available in `flow_run.job_variables`.
 - Supported merged fields: namespace, service account, environment variables, volumes, volume mounts, image pull secrets.
 - Precedence:
-  - `PREFECT_CWL_K8S_*` backend settings are defaults.
-  - Runtime `job_variables` override defaults for supported merged fields.
+  - Prefect base job-template defaults (including `variables.properties.*.default`, when available) are the base layer.
+  - Runtime `job_variables` override template defaults.
+  - Local/backend overrides (`PREFECT_CWL_K8S_*`, backend constructor overrides, and optional local `job_variables`) override runtime values.
+  - Local/backend fallback defaults are not forced overrides; they apply only when no higher-priority layer provides a value.
   - Required `prefect-cwl` PVC binding stays enforced (`pvc_name` + root `pvc_mount_path` mount).
 - Safety constraints:
   - The required `prefect-cwl` PVC `work` volume and root mount are always enforced.
+  - `pvc_mount_path` is the canonical in-container workspace root where `prefect-cwl` materializes run data.
   - Step-level env values override runtime/template env on key collision.
   - If no run context/job variables exist (e.g. local runs), backend defaults are used.
 

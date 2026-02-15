@@ -10,6 +10,7 @@ import re
 import shlex
 import uuid
 import copy
+import logging
 from logging import Logger
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
@@ -46,6 +47,8 @@ class K8sBackend(Backend):
         ttl_seconds_after_finished: Optional[int] = None,
         job_template: Optional[Dict[str, Any]] = None,
         job_variables: Optional[Dict[str, Any]] = None,
+        log_level: Optional[str] = None,
+        stream_log_level: Optional[str] = None,
     ) -> None:
         """Initialize the backend.
 
@@ -65,11 +68,14 @@ class K8sBackend(Backend):
             or os.environ.get("PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME")
         )
         self._pull_secrets_has_user_override = bool(
-            image_pull_secrets is not None or os.environ.get("PREFECT_CWL_K8S_PULL_SECRETS")
+            image_pull_secrets is not None
+            or os.environ.get("PREFECT_CWL_K8S_PULL_SECRETS")
         )
         self._ttl_has_user_override = ttl_seconds_after_finished is not None
 
-        self.namespace = namespace or os.environ.get("PREFECT_CWL_K8S_NAMESPACE", "prefect")
+        self.namespace = namespace or os.environ.get(
+            "PREFECT_CWL_K8S_NAMESPACE", "prefect"
+        )
         self.pvc_name = pvc_name or os.environ.get(
             "PREFECT_CWL_K8S_PVC_NAME", "prefect-shared-pvc"
         )
@@ -97,6 +103,34 @@ class K8sBackend(Backend):
         )
         self.job_template = copy.deepcopy(job_template) if job_template else None
         self.job_variables = copy.deepcopy(job_variables) if job_variables else {}
+        self.log_level = self._coerce_log_level(
+            log_level or os.environ.get("PREFECT_CWL_K8S_LOG_LEVEL", "INFO"),
+            default=logging.INFO,
+        )
+        self.stream_log_level = self._coerce_log_level(
+            stream_log_level
+            or os.environ.get("PREFECT_CWL_K8S_STREAM_LOG_LEVEL", "DEBUG"),
+            default=logging.DEBUG,
+        )
+
+    @staticmethod
+    def _coerce_log_level(value: Any, default: int) -> int:
+        if value is None:
+            return default
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            if not normalized:
+                return default
+            resolved = logging.getLevelName(normalized)
+            if isinstance(resolved, int):
+                return resolved
+            try:
+                return int(normalized)
+            except ValueError:
+                return default
+        return default
 
     # ------------------------
     # Helpers
@@ -669,8 +703,8 @@ class K8sBackend(Backend):
         """
         job_run = await k8s_job.trigger()
         await job_run.wait_for_completion(
-            print_func=lambda line: logger.info(
-                "[%s] %s", step_job_name, line.rstrip()
+            print_func=lambda line: logger.log(
+                self.stream_log_level, "[%s] %s", step_job_name, line.rstrip()
             ),
         )
         return await job_run.fetch_result()
@@ -721,10 +755,10 @@ class K8sBackend(Backend):
         listings_job_name = self._k8s_name(f"{prefix}-listings")
         step_job_name = self._k8s_name(f"{prefix}-run")
 
-        logger.info("K8s step: %s image=%s", step_job_name, step.image)
-        logger.info("Command: %s", shlex.join(step.argv))
-        logger.info("PVC: %s mounted at %s", self.pvc_name, self.pvc_mount_path)
-        logger.info("Volumes: %s", sorted(step.volumes or {}))
+        logger.log(self.log_level, "K8s step: %s image=%s", step_job_name, step.image)
+        logger.debug("Command: %s", shlex.join(step.argv))
+        logger.debug("PVC: %s mounted at %s", self.pvc_name, self.pvc_mount_path)
+        logger.debug("Volumes: %s", sorted(step.volumes or {}))
 
         # Run mkdir job
         if dirs:
