@@ -61,7 +61,7 @@ class PrefectFlowBuilder:
             produced_snapshot: Dict[Tuple[str, str], ArtifactPath],
             job_suffix: Optional[str] = None,
             input_overrides: Optional[Dict[str, Any]] = None,
-        ) -> Dict[str, Path]:
+        ) -> Dict[str, ArtifactPath]:
             """Materialize and execute a single step task."""
             local_produced = dict(produced_snapshot)
             await backend.call_single_step(
@@ -72,14 +72,10 @@ class PrefectFlowBuilder:
                 job_suffix=job_suffix,
                 input_overrides=input_overrides,
             )
-            outputs: Dict[str, Path] = {}
+            outputs: Dict[str, ArtifactPath] = {}
             for (step_name, output_port), host_path in local_produced.items():
                 if step_name != step_template.step_name:
                     continue
-                if not isinstance(host_path, Path):
-                    raise ValidationError(
-                        f"Step {step_name!r} output {output_port!r} must be a Path for a single run"
-                    )
                 outputs[output_port] = host_path
             return outputs
 
@@ -153,8 +149,10 @@ class PrefectFlowBuilder:
             wave_runs: List[Tuple[str, Optional[int], Any]],
         ) -> None:
             """Merge per-run step outputs into shared produced mapping."""
-            single_outputs: Dict[Tuple[str, str], Path] = {}
-            scattered_outputs: Dict[Tuple[str, str], List[Tuple[int, Path]]] = {}
+            single_outputs: Dict[Tuple[str, str], ArtifactPath] = {}
+            scattered_outputs: Dict[
+                Tuple[str, str], List[Tuple[int, ArtifactPath]]
+            ] = {}
 
             for step_name, scatter_idx, fut in wave_runs:
                 run_outputs = fut.result()
@@ -169,10 +167,17 @@ class PrefectFlowBuilder:
 
             for key, path in single_outputs.items():
                 produced[key] = path
-            for key, indexed_paths in scattered_outputs.items():
-                produced[key] = [
-                    p for _, p in sorted(indexed_paths, key=lambda item: item[0])
+            for key, indexed_outputs in scattered_outputs.items():
+                ordered = [
+                    p for _, p in sorted(indexed_outputs, key=lambda item: item[0])
                 ]
+                flattened: List[Path] = []
+                for item in ordered:
+                    if isinstance(item, list):
+                        flattened.extend(item)
+                    else:
+                        flattened.append(item)
+                produced[key] = flattened
 
         async def execute(**kwargs: Any) -> Dict[str, Any]:
             """Execute all steps in topologically sorted waves, checking for scattered-steps."""

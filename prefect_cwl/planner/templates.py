@@ -1,11 +1,13 @@
 """Templates for workflow steps and workflows, with materialization logic."""
 
 from dataclasses import dataclass, field
+import re
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Tuple, Any, Callable, Optional, Union
 
 from prefect_cwl.constants import JOBROOT, INROOT
 from prefect_cwl.exceptions import ValidationError
+from prefect_cwl.io import interpolate
 from prefect_cwl.models import WorkflowStep, CommandLineToolNode, ResourceRequirement
 
 
@@ -102,9 +104,11 @@ class StepPlan:
     outdir_container: PurePosixPath
     volumes: Dict[str, str]  # host -> "container:ro|rw"
     listings: List[ListingMaterialization]
-    out_artifacts: Dict[str, Path]  # tool output name -> host path
+    out_artifacts: Dict[str, ArtifactPath]  # tool output name -> host path(s)
     envs: Dict[str, str]
     resources: StepResources = field(default_factory=StepResources)
+    host_outdir: Optional[Path] = None
+    values: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -341,6 +345,8 @@ class StepTemplate:
             out_artifacts=out_artifacts,
             envs=self.envs,
             resources=self.resources,
+            host_outdir=host_outdir,
+            values=resolved.values,
         )
 
 
@@ -405,17 +411,86 @@ def validate_and_materialize_listings(
 
 def compute_out_artifacts(
     *, clt: CommandLineToolNode, host_outdir: Path
-) -> Dict[str, Path]:
+) -> Dict[str, ArtifactPath]:
     """Compute output artifacts paths based on output bindings.
 
     Args:
         clt (CommandLineToolNode): The CommandLineToolNode to compute artifacts for.
         host_outdir (Path): The host directory where the output artifacts will be written.
     """
-    out_artifacts: Dict[str, Path] = {}
+    out_artifacts: Dict[str, ArtifactPath] = {}
     for outport, outspec in clt.outputs.items():
         glob = outspec.outputBinding.glob
         out_artifacts[outport] = host_outdir / glob
+    return out_artifacts
+
+
+_GLOB_META = re.compile(r"[*?\[\]{}]")
+
+
+def _parse_output_type(output_type: str) -> tuple[str, bool, bool]:
+    t = output_type.strip()
+    is_optional = t.endswith("?")
+    if is_optional:
+        t = t[:-1].strip()
+    is_array = t.endswith("[]")
+    if is_array:
+        t = t[:-2].strip()
+    return t, is_array, is_optional
+
+
+def _validate_rendered_glob(glob: str) -> None:
+    if not glob:
+        raise ValidationError("Rendered output glob must not be empty")
+    if glob.startswith("/"):
+        raise ValidationError(f"Rendered output glob must be relative: {glob!r}")
+    if ".." in PurePosixPath(glob).parts:
+        raise ValidationError(
+            f"Rendered output glob must not contain '..' traversal: {glob!r}"
+        )
+
+
+def collect_out_artifacts(
+    *,
+    clt: CommandLineToolNode,
+    host_outdir: Path,
+    values: Dict[str, Dict[str, Any]],
+) -> Dict[str, ArtifactPath]:
+    """Collect step outputs from host filesystem using rendered output globs."""
+    ctx = {
+        "inputs": values.get("inputs", {}),
+        "workflow": values.get("workflow", {}),
+    }
+    out_artifacts: Dict[str, ArtifactPath] = {}
+
+    for outport, outspec in clt.outputs.items():
+        rendered_glob = interpolate(outspec.outputBinding.glob, ctx).strip()
+        _validate_rendered_glob(rendered_glob)
+
+        matches = sorted(host_outdir.glob(rendered_glob), key=lambda p: str(p))
+        base_type, is_array, is_optional = _parse_output_type(outspec.type)
+
+        if base_type == "File":
+            matches = [p for p in matches if p.is_file()]
+        elif base_type == "Directory":
+            matches = [p for p in matches if p.is_dir()]
+
+        if is_array:
+            out_artifacts[outport] = matches
+            continue
+
+        if len(matches) == 0:
+            if is_optional:
+                continue
+            raise ValidationError(
+                f"Output {outport!r} expected one match for glob {rendered_glob!r}, got none"
+            )
+        if len(matches) > 1:
+            raise ValidationError(
+                f"Output {outport!r} expected one match for glob {rendered_glob!r}, got {len(matches)}"
+            )
+        out_artifacts[outport] = matches[0]
+
     return out_artifacts
 
 

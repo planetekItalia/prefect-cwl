@@ -1,0 +1,98 @@
+cwlVersion: v1.2
+$graph:
+  - class: Workflow
+    id: "#main"
+    label: NBR (working subset for prefect-cwl)
+    doc: >
+      Current prefect-cwl-compatible version. Pass band asset URLs directly in
+      "assets" (for remote COGs prefer /vsicurl/ prefixed URLs).
+    inputs:
+      aoi:
+        type: string[]
+        doc: Bounding box as [minLon, minLat, maxLon, maxLat]
+      assets:
+        type: string[]
+        doc: Three inputs in order [NIR, SWIR22, SCL]
+      epsg:
+        type: string
+        default: "EPSG:4326"
+    outputs:
+      nbr:
+        type: File
+        outputSource: node_nbr/nbr
+    steps:
+      node_subset:
+        run: "#node_subset"
+        in:
+          asset: assets
+          bbox: aoi
+          epsg: epsg
+        out: [tif]
+        scatter: asset
+      node_nbr:
+        run: "#node_nbr"
+        in:
+          tifs: node_subset/tif
+        out: [nbr]
+
+  - class: CommandLineTool
+    id: node_subset
+    baseCommand: gdal_translate
+    requirements:
+      DockerRequirement:
+        dockerPull: ghcr.io/osgeo/gdal:alpine-normal-latest
+        dockerOutputDirectory: /out
+      NetworkAccess:
+        networkAccess: true
+    arguments:
+      - -projwin
+      - $(inputs.bbox[0])
+      - $(inputs.bbox[3])
+      - $(inputs.bbox[2])
+      - $(inputs.bbox[1])
+      - -projwin_srs
+      - $(inputs.epsg)
+      - /out/subset.tif
+    inputs:
+      asset:
+        type: string
+        inputBinding:
+          position: 1
+    # bbox receives the workflow "aoi" array
+      bbox:
+        type: string[]
+      epsg:
+        type: string
+    outputs:
+      tif:
+        type: File
+        outputBinding:
+          glob: subset.tif
+
+  - class: CommandLineTool
+    id: node_nbr
+    baseCommand: otbcli_BandMathX
+    requirements:
+      DockerRequirement:
+        dockerPull: terradue/otb-7.2.0
+        dockerOutputDirectory: /out
+      NetworkAccess:
+        networkAccess: true
+    arguments:
+      - -out
+      - /out/nbr.tif
+      - -exp
+      - >
+        (im3b1 == 8 or im3b1 == 9 or im3b1 == 0 or im3b1 == 1 or im3b1 == 2 or
+        im3b1 == 10 or im3b1 == 11) ? -2 : (im1b1 - im2b1) / (im1b1 + im2b1)
+    inputs:
+      tifs:
+        type: File[]
+        inputBinding:
+          position: 1
+          prefix: -il
+    outputs:
+      nbr:
+        type: File
+        outputBinding:
+          glob: nbr.tif

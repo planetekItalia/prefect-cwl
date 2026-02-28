@@ -2,20 +2,18 @@
 
 ### Priority 1: Critical Features (Next Release)
 
-#### 1.1 Output Validation
-**Goal:** Verify outputs exist after step execution
+#### 1.1 Output Validation and Glob Collection
+**Status:** Completed in current branch changes
 
-**Implementation:**
-```python
-# In backends, after execution:
-for output_name, expected_path in step_plan.out_artifacts.items():
-    if not expected_path.exists():
-        raise RuntimeError(
-            f"Step {step_name} did not produce {output_name} at {expected_path}"
-        )
-```
+**Implemented:**
+- Runtime output collection using rendered output globs (`collect_out_artifacts`)
+- Validation rules:
+  - scalar outputs require exactly one match (unless optional `?`)
+  - array outputs collect multiple matches
+  - relative glob safety checks (no absolute paths or `..`)
+- Integrated in both Docker and Kubernetes backends
 
-**Benefit:** Catch silent failures early
+**Result:** Output handling now supports practical CWL wildcard-based outputs with strict validation semantics
 
 #### 1.2 Better Error Messages
 **Goal:** Include step context in all errors
@@ -70,7 +68,6 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Implementation:**
 - Fix edge cases with same-directory file mounts
-- Support File[] types
 - Validate file mounts don't conflict
 
 **Benefit:** More CWL compatibility
@@ -92,21 +89,15 @@ def _setup_job(self, job_name, dirs, listings):
 
 ### Priority 3: CWL Feature Parity (Q3 2026)
 
-#### 3.1 Simple Glob Patterns
-**Goal:** Support basic wildcards like `*.txt`
+#### 3.1 Advanced Output Expressions
+**Goal:** Extend output handling beyond simple glob interpolation
 
-**Implementation:**
-- Expand glob at runtime after execution
-- Track multiple output files
-- Pass as array to downstream steps
+**Context:** Basic runtime glob expansion is already implemented.
 
-**Benefit:** More CWL compatibility
-
-
-**Challenges:**
-- Prefect UI customization
-- File upload handling
-- Storage management
+**Next scope:**
+- Broader expression semantics in output bindings
+- Better typed validation for mixed/complex output shapes
+- Better diagnostics for ambiguous matches and missing artifacts
 
 #### 3.2 JavaScript Expressions (Limited)
 **Goal:** Extends `$(...)` expressions
@@ -126,20 +117,15 @@ def _setup_job(self, job_name, dirs, listings):
 
 ### Priority 4: Advanced Features (Q4 2026)
 
-#### 4.1 Scatter/Gather
-**Goal:** Support array-based step parallelism
+#### 4.1 Scatter/Gather Extensions
+**Goal:** Extend current scatter support
+
+**Current:** Single-input scatter + ordered gather behavior is implemented.
 
 **Implementation:**
-- Detect scatter directive in CWL
-- Generate N parallel Prefect tasks
-- Gather results and pass to next step
-
-**Benefit:** Major CWL compatibility improvement
-
-**Challenges:**
-- Complex dependency tracking
-- Result aggregation
-- UI representation
+- Multi-input scatter semantics (`dotproduct`, cross-product)
+- Nested scatter/gather combinations
+- Better UI/diagnostic visibility for scattered outputs
 
 #### 4.2 Subworkflows
 **Goal:** Support nested workflows
@@ -196,4 +182,10 @@ def _setup_job(self, job_name, dirs, listings):
 
 ---
 
-Last updated: January 2026
+### Next Iteration Samples
+
+- Promote `sample_cwl/nbr/` from working subset to documented, runnable sample with a matching runner and usage notes.
+
+---
+
+Last updated: February 2026

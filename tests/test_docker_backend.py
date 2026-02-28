@@ -41,6 +41,8 @@ async def test_docker_backend_success(tmp_path, monkeypatch):
     outdir = tmp_path / "out"
     jobdir = tmp_path / "job"
     listing_path = jobdir / "hello.txt"
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "hi.txt").write_text("ok", encoding="utf-8")
 
     plan = StepPlan(
         step_name="step1",
@@ -208,6 +210,8 @@ async def test_docker_backend_passes_suffix_and_overrides_to_materialize(
     outdir = tmp_path / "out"
     jobdir = tmp_path / "job"
     override_dir = tmp_path / "upstream" / "out"
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "x.txt").write_text("ok", encoding="utf-8")
 
     plan = StepPlan(
         step_name="augmenter",
@@ -277,6 +281,8 @@ async def test_docker_backend_maps_resource_limits_to_create_kwargs(
 ):
     outdir = tmp_path / "out"
     jobdir = tmp_path / "job"
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "hi.txt").write_text("ok", encoding="utf-8")
     plan = StepPlan(
         step_name="step1",
         tool_id="tool-1",

@@ -18,6 +18,7 @@ from prefect_cwl.planner.templates import (
     StepTemplate,
     ListingMaterialization,
     StepResources,
+    collect_out_artifacts,
 )
 from prefect_cwl.planner.templates import ArtifactPath
 from prefect_cwl.backends.base import Backend
@@ -140,7 +141,7 @@ class DockerBackend(Backend):
             local_inputs: Dict[str, Any],
             local_workspace: Path,
             job_suffix: Optional[str],
-        ) -> Dict[str, Path]:
+        ) -> Dict[str, ArtifactPath]:
             # MATERIALIZE the step with runtime values
             step_plan = step_template.materialize_step(
                 workflow_inputs=local_inputs,
@@ -205,7 +206,13 @@ class DockerBackend(Backend):
                     f"Step {step_plan.step_name} failed with exit code {status}\n\n{tail}"
                 )
 
-            return step_plan.out_artifacts
+            if step_plan.host_outdir is None:
+                return dict(step_plan.out_artifacts or {})
+            return collect_out_artifacts(
+                clt=step_template.tool,
+                host_outdir=step_plan.host_outdir,
+                values=step_plan.values,
+            )
 
         out_artifacts = await _execute_once(
             local_inputs=workflow_inputs,

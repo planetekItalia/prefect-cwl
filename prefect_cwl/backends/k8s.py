@@ -24,6 +24,7 @@ from prefect_cwl.planner.templates import (
     ListingMaterialization,
     StepTemplate,
     StepResources,
+    collect_out_artifacts,
 )
 from prefect_cwl.planner.templates import ArtifactPath
 from prefect_cwl.backends.base import Backend
@@ -180,7 +181,12 @@ class K8sBackend(Backend):
         for host, spec in (step.volumes or {}).items():
             mapped_volumes[host] = spec
 
-        mapped_out = {k: Path(v) for k, v in (step.out_artifacts or {}).items()}
+        mapped_out: Dict[str, ArtifactPath] = {}
+        for key, value in (step.out_artifacts or {}).items():
+            if isinstance(value, list):
+                mapped_out[key] = [Path(v) for v in value]
+            else:
+                mapped_out[key] = Path(value)
 
         return StepPlan(
             step_name=step.step_name,
@@ -193,6 +199,10 @@ class K8sBackend(Backend):
             out_artifacts=mapped_out,
             envs=step.envs,
             resources=step.resources,
+            host_outdir=Path(step.host_outdir)
+            if step.host_outdir is not None
+            else None,
+            values=dict(step.values),
         )
 
     def _k8s_name(self, s: str, max_len: int = 63) -> str:
@@ -784,6 +794,15 @@ class K8sBackend(Backend):
         )
         await self._run_job(k8s_job, step_job_name, logger)
 
+        if step.host_outdir is None:
+            out_artifacts = dict(step.out_artifacts or {})
+        else:
+            out_artifacts = collect_out_artifacts(
+                clt=step_template.tool,
+                host_outdir=step.host_outdir,
+                values=step.values,
+            )
+
         # Track produced outputs for downstream steps
-        for output_port, host_path in step.out_artifacts.items():
+        for output_port, host_path in out_artifacts.items():
             produced[(step.step_name, output_port)] = host_path

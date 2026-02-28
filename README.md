@@ -5,8 +5,8 @@
 </div>
 
 A lightweight adapter that bridges the *Common Workflow Language* (CWL) world with *Prefect*.
-It not only executes CWL but lets you orchestrate it with Prefect’s scheduling, retries, observability, and deployments (this a WIP, actually).
-Execution is pluggable via backends, starting with Docker and with Kubernetes as a forthcoming option.
+It not only executes CWL but lets you orchestrate it with Prefect’s scheduling, retries, observability, and deployments.
+Execution is pluggable via backends, with both Docker and Kubernetes available.
 
 In this library, the atomic unit is a single CWL step (a `CommandLineTool` or workflow step), not an entire workflow/flow.
 Prefect orchestrates those steps according to the CWL-defined dependencies.
@@ -14,7 +14,7 @@ Prefect orchestrates those steps according to the CWL-defined dependencies.
 ## What this achieves
 - **Bridge CWL and Prefect**: Parse CWL, build a dependency graph, and run steps under Prefect orchestration.
 - **Orchestrate, not just execute**: Use Prefect’s UI, scheduling, retries, mapping, and deployments to operate CWL workloads.
-- **Pluggable execution backends**: Run each CWL step via Docker today; Kubernetes support is planned.
+- **Pluggable execution backends**: Run each CWL step via Docker or Kubernetes.
 
 ## Key concepts
 - **Atomic unit = CWL step**: Each CWL step is executed as a Prefect task invocation via a backend. Prefect orchestrates the order and parallelism.
@@ -30,17 +30,25 @@ Prefect orchestrates those steps according to the CWL-defined dependencies.
 
 ## Current limitations
 
-- The adapter needs the explicit *WRK_DIR* env variable, set up a *current working directory* when running Docker container/K8s Job
-- No glob supported, aside from simple *folder names*
-- Data among steps shall be passed with directory. Each step shall then read the previous output saved somehow to those files
-- Names for steps and input/output reference shall be the same
+- The adapter needs explicit working directory setup (`WRK_DIR` or backend-specific mount roots).
+- This is still a pragmatic CWL subset, not full conformance.
+- Scatter support is partial: single-input scatter is supported; multi-input dotproduct/crossproduct is not.
+- Data exchange between steps is filesystem-based (host paths/PVC), not in-memory streaming.
 A more in-depth list can be checked out inside the *DESIGN* file.
 
 Check *sample_cwl* folder for those limits in practice.
 
 ## Backends
 - **Docker backend**: Uses Prefect’s Docker primitives to pull images, mount volumes, and execute commands.
-- **Kubernetes backend (WIP)**: Same interface; schedule Pods/Jobs to run each CWL step.
+- **Kubernetes backend**: Same interface; schedules Jobs to run each CWL step.
+
+## Output collection behavior
+
+- Output `glob` values are resolved at runtime (including wildcard patterns and interpolated values).
+- Relative globs are required; absolute paths and `..` traversal are rejected.
+- Scalar outputs (`File` / `Directory`) must match exactly one artifact unless optional (`?`).
+- Array outputs (`File[]` / `Directory[]`) collect all matches in stable sorted order.
+- Collected artifacts are propagated to downstream steps as `Path` or `List[Path]` values.
 
 ## Quick start
 
@@ -152,6 +160,7 @@ uv run <file_path>
 
 ## Sample CWL (WIP)
 See `sample_cwl/` for ready-to-run examples you can use to test the library. These are work-in-progress and may evolve as the adapter expands CWL coverage and features.
+This includes `sample_cwl/nbr/`, currently added as a working subset for next-iteration refinement.
 
 ## Project status
 Early-stage and evolving. Expect changes in models, supported CWL features, and backend interfaces as we harden the adapter.

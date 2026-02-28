@@ -195,7 +195,7 @@ class WorkflowTemplate:
 def materialize_step(
     template: StepTemplate,
     workflow_inputs: Dict[str, Any],
-    produced: Dict[Tuple[str, str], Path],
+    produced: Dict[Tuple[str, str], ArtifactPath],
     workspace: Path,
     render_io: RenderIOFn,
 ) -> StepPlan
@@ -207,7 +207,7 @@ def materialize_step(
 3. Build volume mounts (directories containing inputs/outputs)
 4. Render command line and listings via `render_io` callback
 5. Validate listings are under `JOBROOT`
-6. Compute output artifact paths
+6. Compute declared output artifact globs/paths
 7. Return fully materialized `StepPlan`
 
 **Design Rationale:** This function is called **at runtime** by backends, allowing the same template to be materialized with different input values.
@@ -240,10 +240,12 @@ def build(template: WorkflowTemplate, backend: Backend) -> Flow
 
 **Shared State Management:**
 
-The `produced: Dict[Tuple[str, str], Path]` dictionary is **shared mutable state** across all tasks:
+The `produced: Dict[Tuple[str, str], ArtifactPath]` dictionary is **shared mutable state** across all tasks:
+
+`ArtifactPath` is `Path | List[Path]`, so a step output can be a single artifact or an ordered list of artifacts.
 
 ```python
-produced[(step_name, output_port)] = host_path
+produced[(step_name, output_port)] = host_path_or_paths
 ```
 
 **Safety:** This is safe because:
@@ -264,7 +266,7 @@ class Backend(ABC):
         self,
         step_template: StepTemplate,
         workflow_inputs: Dict[str, Any],
-        produced: Dict[Tuple[str, str], Path],
+        produced: Dict[Tuple[str, str], ArtifactPath],
         workspace: Path,
     ) -> None:
         pass
@@ -306,7 +308,7 @@ async def call_single_step(...):
     log_task = asyncio.create_task(...)
     result = await container.wait()
 
-    # 6. Track outputs
+    # 6. Collect and validate outputs from rendered glob(s), then track outputs
     produced.update(...)
 ```
 
@@ -344,7 +346,7 @@ async def call_single_step(...):
     # 4. Main job - execute tool
     await run_namespaced_job(_step_job(...))
 
-    # 5. Track outputs
+    # 5. Collect and validate outputs from rendered glob(s), then track outputs
     produced.update(...)
 ```
 
@@ -459,7 +461,7 @@ For each wave:
     Container writes outputs to host filesystem
     ↓
     Update produced dict:
-      produced[(step_name, port)] = output_path
+      produced[(step_name, port)] = output_path | [output_path, ...]
   ↓
   Barrier: wait for all steps in wave
 ↓
@@ -533,11 +535,11 @@ Return workflow outputs
    - **Impact:** Cannot run arbitrary CWL workflows
    - **Mitigation:** Document supported features clearly
 
-2. **Glob Patterns**
-   - **Limit:** No wildcards, only exact paths
-   - **Rationale:** Simplifies output tracking, no ambiguity
-   - **Impact:** Cannot use `*.txt` patterns
-   - **Mitigation:** Require tools to write to specific filenames
+2. **Output Binding Scope**
+   - **Supported:** Relative output globs, wildcard patterns, and interpolated output bindings
+   - **Limit:** Output globs must stay relative and cannot use absolute paths or `..` traversal
+   - **Impact:** Unsafe/glob-invalid patterns are rejected early
+   - **Mitigation:** Keep output bindings under tool `dockerOutputDirectory` with safe relative globs
 
 3. **Workflow-Level File Inputs**
    - **Limit:** Only primitive types as workflow inputs
@@ -571,10 +573,12 @@ Return workflow outputs
    - **Impact:** If only local gating is configured, other flows/workers can still consume cluster capacity
    - **Mitigation:** Configure a Prefect tag limit for `PREFECT_CWL_SCATTER_TAG` to enforce global hard caps
 
-4. **No Output Validation**
-   - **Limit:** Doesn't verify outputs exist after execution
-   - **Risk:** Silent failures if tool doesn't create expected outputs
-   - **Mitigation:** Plan to add in future (see Roadmap)
+4. **Output Cardinality Validation**
+   - **Behavior:** Runtime collection validates output cardinality by type:
+     - `File` / `Directory`: exactly one match (unless optional `?`)
+     - `File[]` / `Directory[]`: collect all matches in stable sorted order
+   - **Risk:** Overly broad globs can still produce unexpected large output sets
+   - **Mitigation:** Prefer precise globs and explicit output typing
 
 5. **Workspace Cleanup**
    - **Limit:** User must clean up workspace directories

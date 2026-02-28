@@ -38,10 +38,12 @@ class CapturingStepTemplate:
 
 @pytest.mark.asyncio
 async def test_k8s_backend_success(tmp_path, monkeypatch):
-    pvc_root = "/data"
+    pvc_root = str(tmp_path / "data")
     outdir = Path(pvc_root) / "runs" / "out"
     jobdir = Path(pvc_root) / "runs" / "job"
     listing_path = jobdir / "hello.txt"
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "x.txt").write_text("ok", encoding="utf-8")
 
     plan = StepPlan(
         step_name="s",
@@ -124,7 +126,7 @@ async def test_k8s_backend_success(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_k8s_backend_failure_raises(tmp_path, monkeypatch):
-    pvc_root = "/data"
+    pvc_root = str(tmp_path / "data")
     outdir = Path(pvc_root) / "o"
     jobdir = Path(pvc_root) / "j"
 
@@ -172,10 +174,12 @@ async def test_k8s_backend_failure_raises(tmp_path, monkeypatch):
 async def test_k8s_backend_passes_suffix_and_overrides_to_materialize(
     tmp_path, monkeypatch
 ):
-    pvc_root = "/data"
+    pvc_root = str(tmp_path / "data")
     outdir = Path(pvc_root) / "o"
     jobdir = Path(pvc_root) / "j"
     override_dir = Path(pvc_root) / "upstream" / "out"
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "x.txt").write_text("ok", encoding="utf-8")
 
     plan = StepPlan(
         step_name="augmenter",
@@ -222,9 +226,11 @@ async def test_k8s_backend_passes_suffix_and_overrides_to_materialize(
 
 @pytest.mark.asyncio
 async def test_k8s_backend_merges_runtime_job_variables(tmp_path, monkeypatch):
-    pvc_root = "/data"
+    pvc_root = str(tmp_path / "data")
     outdir = Path(pvc_root) / "runs" / "out"
     jobdir = Path(pvc_root) / "runs" / "job"
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "x.txt").write_text("ok", encoding="utf-8")
 
     plan = StepPlan(
         step_name="s",
@@ -330,9 +336,11 @@ async def test_k8s_backend_merges_runtime_job_variables(tmp_path, monkeypatch):
 async def test_k8s_backend_maps_step_resources_to_container_resources(
     tmp_path, monkeypatch
 ):
-    pvc_root = "/data"
+    pvc_root = str(tmp_path / "data")
     outdir = Path(pvc_root) / "runs" / "out"
     jobdir = Path(pvc_root) / "runs" / "job"
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / "x.txt").write_text("ok", encoding="utf-8")
 
     plan = StepPlan(
         step_name="s",

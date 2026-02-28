@@ -1,0 +1,1 @@
+Added runtime output artifact collection from rendered CWL output globs across Docker and Kubernetes backends, including scalar/array cardinality validation and propagation of list outputs through flow orchestration. Added a new working `sample_cwl/nbr` example for next-iteration refinement.

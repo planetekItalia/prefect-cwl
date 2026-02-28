@@ -54,8 +54,6 @@ def test_docker_output_directory_must_be_absolute_raises_custom_error():
     "glob",
     [
         "/absolute.txt",  # absolute not allowed
-        "data/*.txt",  # wildcard not allowed
-        "**/deep/file.txt",  # double-star not allowed
         "../escape.txt",  # parent traversal not allowed
         "",  # empty not allowed
     ],
@@ -68,6 +66,14 @@ def test_output_binding_glob_validation_errors(glob):
         )
     # Spot-check message mentions "glob" and the reason
     assert "glob" in str(ei.value)
+
+
+def test_output_binding_glob_accepts_wildcards_when_relative():
+    out = ToolOutput(
+        type="File[]",
+        outputBinding=OutputBinding(glob="data/*.txt"),
+    )
+    assert out.outputBinding.glob == "data/*.txt"
 
 
 def test_listing_entryname_must_be_under_jobroot():

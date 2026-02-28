@@ -19,6 +19,7 @@ from prefect_cwl.planner.planner import index_graph
 from prefect_cwl.exceptions import ValidationError
 from prefect_cwl.planner.templates import (
     StepTemplate,
+    collect_out_artifacts,
     compute_out_artifacts,
     validate_and_materialize_listings,
     step_host_dirs,
@@ -59,6 +60,72 @@ def test_compute_out_artifacts_maps_globs(tmp_path: Path, linear_doc: CWLDocumen
     out = compute_out_artifacts(clt=clt, host_outdir=host_outdir)
 
     assert out["out_file"] == host_outdir / "hello.txt"
+
+
+def test_collect_out_artifacts_collects_glob_array(tmp_path: Path):
+    outdir = tmp_path / "out"
+    (outdir / "data").mkdir(parents=True)
+    (outdir / "data" / "a.txt").write_text("a", encoding="utf-8")
+    (outdir / "data" / "b.txt").write_text("b", encoding="utf-8")
+
+    tool = CommandLineToolNode(
+        **{
+            "class": "CommandLineTool",
+            "id": "t",
+            "requirements": Requirements(
+                DockerRequirement=DockerRequirement(
+                    dockerPull="python:3.11",
+                    dockerOutputDirectory=PurePosixPath("/out"),
+                ),
+                EnvVarRequirement=EnvVarRequirement(envDef={}),
+            ),
+            "baseCommand": ["echo", "ok"],
+            "inputs": {},
+            "outputs": {
+                "files": ToolOutput(
+                    type="File[]", outputBinding=OutputBinding(glob="data/*.txt")
+                )
+            },
+        }
+    )
+
+    out = collect_out_artifacts(
+        clt=tool, host_outdir=outdir, values={"inputs": {}, "workflow": {}}
+    )
+    assert out["files"] == [outdir / "data" / "a.txt", outdir / "data" / "b.txt"]
+
+
+def test_collect_out_artifacts_raises_when_scalar_glob_matches_many(tmp_path: Path):
+    outdir = tmp_path / "out"
+    outdir.mkdir(parents=True)
+    (outdir / "a.tif").write_text("a", encoding="utf-8")
+    (outdir / "b.tif").write_text("b", encoding="utf-8")
+
+    tool = CommandLineToolNode(
+        **{
+            "class": "CommandLineTool",
+            "id": "t",
+            "requirements": Requirements(
+                DockerRequirement=DockerRequirement(
+                    dockerPull="python:3.11",
+                    dockerOutputDirectory=PurePosixPath("/out"),
+                ),
+                EnvVarRequirement=EnvVarRequirement(envDef={}),
+            ),
+            "baseCommand": ["echo", "ok"],
+            "inputs": {},
+            "outputs": {
+                "file": ToolOutput(
+                    type="File", outputBinding=OutputBinding(glob="*.tif")
+                )
+            },
+        }
+    )
+
+    with pytest.raises(ValidationError, match="expected one match"):
+        collect_out_artifacts(
+            clt=tool, host_outdir=outdir, values={"inputs": {}, "workflow": {}}
+        )
 
 
 def _make_step_template(

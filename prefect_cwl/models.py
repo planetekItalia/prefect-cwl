@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Literal, Optional, Union, Annotated
 
@@ -139,9 +138,6 @@ class ToolInput(BaseModel):
     inputBinding: Optional[InputBinding] = None
 
 
-_GLOB_CHARS = re.compile(r"[*?\[\]{}]")
-
-
 class OutputBinding(BaseModel):
     """Output binding."""
 
@@ -150,7 +146,7 @@ class OutputBinding(BaseModel):
     @field_validator("glob")
     @classmethod
     def must_be_exact_relative_path(cls, v: str) -> str:
-        """Validate that glob is an exact relative path without wildcards or traversal.
+        """Validate that glob is a safe relative path/glob without traversal.
 
         Args:
             v: glob path string
@@ -163,10 +159,6 @@ class OutputBinding(BaseModel):
         # Must be relative (not absolute)
         if v.startswith("/"):
             raise ValueError(f"glob must be a relative path, not absolute: {v!r}")
-
-        # Disallow glob metacharacters
-        if _GLOB_CHARS.search(v) or "**" in v:
-            raise ValueError(f"glob must be an exact path without wildcards: {v!r}")
 
         # Disallow parent traversal - simpler check using Path
         path = PurePosixPath(v)
