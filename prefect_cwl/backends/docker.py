@@ -18,9 +18,9 @@ from prefect_cwl.planner.templates import (
     StepTemplate,
     ListingMaterialization,
     StepResources,
-    collect_out_artifacts,
 )
 from prefect_cwl.planner.templates import ArtifactPath
+from prefect_cwl.backends.artifacts import collect_out_artifacts_local
 from prefect_cwl.backends.base import Backend
 from prefect_cwl.exceptions import ValidationError
 from prefect_cwl.io import build_command_and_listing
@@ -170,7 +170,9 @@ class DockerBackend(Backend):
                 logger.info("Resources: %s", resource_kwargs)
 
             user = None
-            if hasattr(os, "getuid"):
+            if step_plan.container_user:
+                user = step_plan.container_user
+            elif hasattr(os, "getuid"):
                 user = f"{os.getuid()}:{os.getgid()}"
 
             container = await create_docker_container(
@@ -208,7 +210,7 @@ class DockerBackend(Backend):
 
             if step_plan.host_outdir is None:
                 return dict(step_plan.out_artifacts or {})
-            return collect_out_artifacts(
+            return collect_out_artifacts_local(
                 clt=step_template.tool,
                 host_outdir=step_plan.host_outdir,
                 values=step_plan.values,

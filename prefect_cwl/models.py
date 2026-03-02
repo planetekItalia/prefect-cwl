@@ -19,6 +19,7 @@ class DockerRequirement(BaseModel):
 
     dockerPull: str
     dockerOutputDirectory: PurePosixPath = JOBROOT
+    dockerUser: Optional[str] = None
 
     @field_validator("dockerOutputDirectory")
     @classmethod

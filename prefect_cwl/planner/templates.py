@@ -1,13 +1,12 @@
 """Templates for workflow steps and workflows, with materialization logic."""
 
 from dataclasses import dataclass, field
-import re
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Tuple, Any, Callable, Optional, Union
 
 from prefect_cwl.constants import JOBROOT, INROOT
 from prefect_cwl.exceptions import ValidationError
-from prefect_cwl.io import interpolate
+from prefect_cwl.backends.artifacts import collect_out_artifacts_local
 from prefect_cwl.models import WorkflowStep, CommandLineToolNode, ResourceRequirement
 
 
@@ -109,6 +108,7 @@ class StepPlan:
     resources: StepResources = field(default_factory=StepResources)
     host_outdir: Optional[Path] = None
     values: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    container_user: Optional[str] = None
 
 
 @dataclass
@@ -136,6 +136,7 @@ class StepTemplate:
     outdir_container: PurePosixPath
     envs: Dict[str, str]
     resources: StepResources = field(default_factory=StepResources)
+    container_user: Optional[str] = None
 
     def _compute_base_step_volumes(
         self,
@@ -347,6 +348,7 @@ class StepTemplate:
             resources=self.resources,
             host_outdir=host_outdir,
             values=resolved.values,
+            container_user=self.container_user,
         )
 
 
@@ -425,31 +427,6 @@ def compute_out_artifacts(
     return out_artifacts
 
 
-_GLOB_META = re.compile(r"[*?\[\]{}]")
-
-
-def _parse_output_type(output_type: str) -> tuple[str, bool, bool]:
-    t = output_type.strip()
-    is_optional = t.endswith("?")
-    if is_optional:
-        t = t[:-1].strip()
-    is_array = t.endswith("[]")
-    if is_array:
-        t = t[:-2].strip()
-    return t, is_array, is_optional
-
-
-def _validate_rendered_glob(glob: str) -> None:
-    if not glob:
-        raise ValidationError("Rendered output glob must not be empty")
-    if glob.startswith("/"):
-        raise ValidationError(f"Rendered output glob must be relative: {glob!r}")
-    if ".." in PurePosixPath(glob).parts:
-        raise ValidationError(
-            f"Rendered output glob must not contain '..' traversal: {glob!r}"
-        )
-
-
 def collect_out_artifacts(
     *,
     clt: CommandLineToolNode,
@@ -457,41 +434,11 @@ def collect_out_artifacts(
     values: Dict[str, Dict[str, Any]],
 ) -> Dict[str, ArtifactPath]:
     """Collect step outputs from host filesystem using rendered output globs."""
-    ctx = {
-        "inputs": values.get("inputs", {}),
-        "workflow": values.get("workflow", {}),
-    }
-    out_artifacts: Dict[str, ArtifactPath] = {}
-
-    for outport, outspec in clt.outputs.items():
-        rendered_glob = interpolate(outspec.outputBinding.glob, ctx).strip()
-        _validate_rendered_glob(rendered_glob)
-
-        matches = sorted(host_outdir.glob(rendered_glob), key=lambda p: str(p))
-        base_type, is_array, is_optional = _parse_output_type(outspec.type)
-
-        if base_type == "File":
-            matches = [p for p in matches if p.is_file()]
-        elif base_type == "Directory":
-            matches = [p for p in matches if p.is_dir()]
-
-        if is_array:
-            out_artifacts[outport] = matches
-            continue
-
-        if len(matches) == 0:
-            if is_optional:
-                continue
-            raise ValidationError(
-                f"Output {outport!r} expected one match for glob {rendered_glob!r}, got none"
-            )
-        if len(matches) > 1:
-            raise ValidationError(
-                f"Output {outport!r} expected one match for glob {rendered_glob!r}, got {len(matches)}"
-            )
-        out_artifacts[outport] = matches[0]
-
-    return out_artifacts
+    return collect_out_artifacts_local(
+        clt=clt,
+        host_outdir=host_outdir,
+        values=values,
+    )
 
 
 RenderIOFn = Callable[

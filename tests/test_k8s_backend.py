@@ -1,5 +1,8 @@
 from pathlib import Path
+import base64
+import json
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -13,9 +16,10 @@ from prefect_cwl.planner.templates import (
 
 
 class DummyStepTemplate:
-    def __init__(self, step_name: str, plan: StepPlan):
+    def __init__(self, step_name: str, plan: StepPlan, tool=None):
         self.step_name = step_name
         self._plan = plan
+        self.tool = tool
 
     def materialize_step(
         self, *, workflow_inputs, produced, workspace, render_io, **kwargs
@@ -58,6 +62,7 @@ async def test_k8s_backend_success(tmp_path, monkeypatch):
         listings=[ListingMaterialization(host_path=listing_path, content="hi")],
         out_artifacts={"o": outdir / "x.txt"},
         envs={"A": "1"},
+        container_user="root",
     )
 
     step = DummyStepTemplate("s", plan)
@@ -105,6 +110,8 @@ async def test_k8s_backend_success(tmp_path, monkeypatch):
     # env mapped
     env_map = {e["name"]: e["value"] for e in container["env"]}
     assert env_map == {"A": "1"}
+    assert container["securityContext"]["runAsUser"] == 0
+    assert container["securityContext"]["runAsGroup"] == 0
     # Has base mount and extra mounts with subPath
     mounts = container["volumeMounts"]
     # base mount at pvc root
@@ -121,6 +128,73 @@ async def test_k8s_backend_success(tmp_path, monkeypatch):
         assert subs[sub] == mpath
 
     # Produced mapping updated
+    assert produced[("s", "o")] == outdir / "x.txt"
+
+
+@pytest.mark.asyncio
+async def test_k8s_backend_collects_outputs_from_pvc_job(tmp_path, monkeypatch):
+    pvc_root = str(tmp_path / "data")
+    outdir = Path(pvc_root) / "runs" / "out"
+    jobdir = Path(pvc_root) / "runs" / "job"
+
+    plan = StepPlan(
+        step_name="s",
+        tool_id="t",
+        image="alpine:3.19",
+        argv=["sh", "-lc", "echo ok"],
+        outdir_container=Path("/out"),
+        volumes={str(outdir): "/out:rw", str(jobdir): "/cwl_job:rw"},
+        listings=[],
+        out_artifacts={},
+        envs={},
+        host_outdir=outdir,
+        values={"inputs": {}, "workflow": {}},
+    )
+    tool = SimpleNamespace(
+        outputs={
+            "o": SimpleNamespace(
+                type="File",
+                outputBinding=SimpleNamespace(glob="x.txt"),
+            )
+        }
+    )
+    step = DummyStepTemplate("s", plan, tool=tool)
+
+    submitted = []
+
+    class FakeJobRun:
+        def __init__(self, v1_job):
+            self.v1_job = v1_job
+            self.fetch_result = AsyncMock(return_value={"ok": True})
+
+        async def wait_for_completion(self, print_func):  # type: ignore[no-untyped-def]
+            job_name = self.v1_job["metadata"]["name"]
+            if job_name.endswith("-collect"):
+                payload = {"o": str(outdir / "x.txt")}
+                encoded = base64.b64encode(json.dumps(payload).encode("utf-8")).decode(
+                    "ascii"
+                )
+                print_func(f"PREFECT_CWL_OUT_ARTIFACTS_B64={encoded}")
+
+    class FakeK8sJob:
+        def __init__(self, namespace, v1_job):
+            self.namespace = namespace
+            self.v1_job = v1_job
+            self._job_run = FakeJobRun(v1_job)
+
+        async def trigger(self):
+            submitted.append(self.v1_job)
+            return self._job_run
+
+    monkeypatch.setattr("prefect_cwl.backends.k8s.KubernetesJob", FakeK8sJob)
+
+    backend = K8sBackend(namespace="ns", pvc_name="pvc", pvc_mount_path=pvc_root)
+    produced = {}
+    await backend.call_single_step(
+        step, workflow_inputs={}, produced=produced, workspace=tmp_path
+    )
+
+    assert any(job["metadata"]["name"].endswith("-collect") for job in submitted)
     assert produced[("s", "o")] == outdir / "x.txt"
 
 

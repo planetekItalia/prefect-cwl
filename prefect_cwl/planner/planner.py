@@ -168,6 +168,7 @@ class Planner:
             docker = clt.requirements.docker_requirement
             outdir_container = docker.dockerOutputDirectory
             image = docker.dockerPull
+            container_user = docker.dockerUser
 
             step_templates[wf_step_name] = StepTemplate(
                 step_name=wf_step_name,
@@ -180,6 +181,7 @@ class Planner:
                 resources=normalize_step_resources(
                     clt.requirements.resource_requirement
                 ),
+                container_user=container_user,
             )
 
         # Compute workflow output schema (what outputs exist, not their values)

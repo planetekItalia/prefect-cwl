@@ -5,6 +5,7 @@ Kubernetes Jobs, managing a shared PVC for staging files and mounts.
 """
 
 import base64
+import json
 import os
 import re
 import shlex
@@ -24,9 +25,9 @@ from prefect_cwl.planner.templates import (
     ListingMaterialization,
     StepTemplate,
     StepResources,
-    collect_out_artifacts,
 )
 from prefect_cwl.planner.templates import ArtifactPath
+from prefect_cwl.backends.artifacts import render_output_collection_specs
 from prefect_cwl.backends.base import Backend
 from prefect_cwl.io import build_command_and_listing
 from prefect_cwl.logger import get_logger
@@ -203,6 +204,7 @@ class K8sBackend(Backend):
             if step.host_outdir is not None
             else None,
             values=dict(step.values),
+            container_user=step.container_user,
         )
 
     def _k8s_name(self, s: str, max_len: int = 63) -> str:
@@ -635,6 +637,64 @@ class K8sBackend(Backend):
             },
         )
 
+    def _collect_outputs_job(self, job_name: str, payload_b64: str) -> dict:
+        """Job that resolves output globs against PVC and prints JSON payload."""
+        collector_script = (
+            "import base64\n"
+            "import json\n"
+            "import os\n"
+            "from pathlib import Path\n"
+            "\n"
+            'payload = json.loads(base64.b64decode(os.environ["PREFECT_CWL_OUTSPEC"]).decode("utf-8"))\n'
+            'host_outdir = Path(payload["host_outdir"])\n'
+            'specs = payload["specs"]\n'
+            "out = {}\n"
+            "\n"
+            "for spec in specs:\n"
+            '    outport = spec["outport"]\n'
+            '    rendered_glob = spec["rendered_glob"]\n'
+            '    base_type = spec["base_type"]\n'
+            '    is_array = bool(spec["is_array"])\n'
+            '    is_optional = bool(spec["is_optional"])\n'
+            "\n"
+            "    matches = sorted(host_outdir.glob(rendered_glob), key=lambda p: str(p))\n"
+            '    if base_type == "File":\n'
+            "        matches = [p for p in matches if p.is_file()]\n"
+            '    elif base_type == "Directory":\n'
+            "        matches = [p for p in matches if p.is_dir()]\n"
+            "\n"
+            "    if is_array:\n"
+            "        out[outport] = [str(p) for p in matches]\n"
+            "        continue\n"
+            "\n"
+            "    if len(matches) == 0:\n"
+            "        if is_optional:\n"
+            "            continue\n"
+            "        raise SystemExit(\n"
+            '            f\"Output {outport!r} expected one match for glob {rendered_glob!r}, got none\"\n'
+            "        )\n"
+            "    if len(matches) > 1:\n"
+            "        raise SystemExit(\n"
+            '            f\"Output {outport!r} expected one match for glob {rendered_glob!r}, got {len(matches)}\"\n'
+            "        )\n"
+            "\n"
+            "    out[outport] = str(matches[0])\n"
+            "\n"
+            "encoded = base64.b64encode(json.dumps(out, sort_keys=True).encode()).decode()\n"
+            'print(f\"PREFECT_CWL_OUT_ARTIFACTS_B64={encoded}\")\n'
+        )
+
+        return self._base_job_manifest(
+            job_name,
+            container_spec={
+                "image": "python:3.11-alpine",
+                "command": ["python", "-c", collector_script],
+                "env": [
+                    {"name": "PREFECT_CWL_OUTSPEC", "value": payload_b64},
+                ],
+            },
+        )
+
     def _step_job(self, job_name: str, step: StepPlan) -> dict:
         """Generate the Kubernetes Job manifest for a step, setting up volumes, environment variables, etc.
 
@@ -671,11 +731,42 @@ class K8sBackend(Backend):
             "env": [{"name": k, "value": v} for k, v in (step.envs or {}).items()],
             "workingDir": str(step.outdir_container),
         }
+        security_context = self._k8s_container_security_context(step.container_user)
+        if security_context:
+            container_spec["securityContext"] = security_context
         resources = self._k8s_container_resources(step.resources)
         if resources:
             container_spec["resources"] = resources
 
         return self._base_job_manifest(job_name, container_spec=container_spec)
+
+    @staticmethod
+    def _k8s_container_security_context(container_user: Optional[str]) -> Dict[str, int]:
+        """Map CWL dockerUser to Kubernetes container securityContext."""
+        if not container_user:
+            return {}
+
+        raw = container_user.strip()
+        if not raw:
+            return {}
+        if raw == "root":
+            return {"runAsUser": 0, "runAsGroup": 0}
+
+        if ":" in raw:
+            uid_s, gid_s = raw.split(":", 1)
+            try:
+                return {"runAsUser": int(uid_s), "runAsGroup": int(gid_s)}
+            except ValueError as exc:
+                raise ValueError(
+                    f"dockerUser must be numeric uid[:gid] for Kubernetes backend; got {container_user!r}"
+                ) from exc
+
+        try:
+            return {"runAsUser": int(raw)}
+        except ValueError as exc:
+            raise ValueError(
+                f"dockerUser must be numeric uid[:gid] or 'root' for Kubernetes backend; got {container_user!r}"
+            ) from exc
 
     @staticmethod
     def _k8s_container_resources(
@@ -718,6 +809,67 @@ class K8sBackend(Backend):
             ),
         )
         return await job_run.fetch_result()
+
+    async def _run_job_capture_lines(
+        self, k8s_job: KubernetesJob, step_job_name: str, logger: Logger
+    ) -> List[str]:
+        """Run a Kubernetes Job and return emitted log lines."""
+        lines: List[str] = []
+
+        def _capture(line: str) -> None:
+            clean = line.rstrip()
+            lines.append(clean)
+            logger.log(self.stream_log_level, "[%s] %s", step_job_name, clean)
+
+        job_run = await k8s_job.trigger()
+        await job_run.wait_for_completion(print_func=_capture)
+        await job_run.fetch_result()
+        return lines
+
+    async def _collect_out_artifacts_pvc(
+        self, step_template: StepTemplate, step: StepPlan, collect_job_name: str, logger: Logger
+    ) -> Dict[str, ArtifactPath]:
+        """Collect outputs by running glob matching inside the PVC-mounted cluster job."""
+        if step.host_outdir is None:
+            return dict(step.out_artifacts or {})
+
+        specs = render_output_collection_specs(clt=step_template.tool, values=step.values)
+        payload = {
+            "host_outdir": str(step.host_outdir),
+            "specs": [
+                {
+                    "outport": item.outport,
+                    "rendered_glob": item.rendered_glob,
+                    "base_type": item.base_type,
+                    "is_array": item.is_array,
+                    "is_optional": item.is_optional,
+                }
+                for item in specs
+            ],
+        }
+        payload_b64 = base64.b64encode(
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+
+        collect_manifest = self._collect_outputs_job(collect_job_name, payload_b64)
+        k8s_job = KubernetesJob(
+            namespace=collect_manifest["metadata"]["namespace"], v1_job=collect_manifest
+        )
+        lines = await self._run_job_capture_lines(k8s_job, collect_job_name, logger)
+
+        marker = "PREFECT_CWL_OUT_ARTIFACTS_B64="
+        encoded = next((line.split(marker, 1)[1] for line in reversed(lines) if marker in line), None)
+        if encoded is None:
+            raise RuntimeError("Output collector job did not emit artifact mapping")
+
+        decoded = json.loads(base64.b64decode(encoded).decode("utf-8"))
+        out_artifacts: Dict[str, ArtifactPath] = {}
+        for outport, value in decoded.items():
+            if isinstance(value, list):
+                out_artifacts[outport] = [Path(p) for p in value]
+            else:
+                out_artifacts[outport] = Path(value)
+        return out_artifacts
 
     # ------------------------
     # Backend API
@@ -764,6 +916,7 @@ class K8sBackend(Backend):
         mkdir_job_name = self._k8s_name(f"{prefix}-mkdir")
         listings_job_name = self._k8s_name(f"{prefix}-listings")
         step_job_name = self._k8s_name(f"{prefix}-run")
+        collect_job_name = self._k8s_name(f"{prefix}-collect")
 
         logger.log(self.log_level, "K8s step: %s image=%s", step_job_name, step.image)
         logger.debug("Command: %s", shlex.join(step.argv))
@@ -794,14 +947,12 @@ class K8sBackend(Backend):
         )
         await self._run_job(k8s_job, step_job_name, logger)
 
-        if step.host_outdir is None:
-            out_artifacts = dict(step.out_artifacts or {})
-        else:
-            out_artifacts = collect_out_artifacts(
-                clt=step_template.tool,
-                host_outdir=step.host_outdir,
-                values=step.values,
-            )
+        out_artifacts = await self._collect_out_artifacts_pvc(
+            step_template=step_template,
+            step=step,
+            collect_job_name=collect_job_name,
+            logger=logger,
+        )
 
         # Track produced outputs for downstream steps
         for output_port, host_path in out_artifacts.items():
