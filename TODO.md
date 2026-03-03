@@ -11,7 +11,9 @@
   - scalar outputs require exactly one match (unless optional `?`)
   - array outputs collect multiple matches
   - relative glob safety checks (no absolute paths or `..`)
-- Integrated in both Docker and Kubernetes backends
+- Backend-owned output collection logic:
+  - local filesystem collection for Docker
+  - in-PVC collection job for Kubernetes
 
 **Result:** Output handling now supports practical CWL wildcard-based outputs with strict validation semantics
 
@@ -137,28 +139,17 @@ def _setup_job(self, job_name, dirs, listings):
 
 **Benefit:** Modular workflow composition
 
-#### 4.3 Resource Requirements
-**Goal:** Support ResourceRequirement (CPU, memory, disk)
-
-**Implementation:**
-- Parse CWL resource hints
-- Pass to backend as container limits
-- Docker: `--cpus`, `--memory`
-- K8s: resources.requests/limits
-
-**Benefit:** Better resource management
-
 ### Priority 5: Developer Experience (Ongoing)
 
 #### 5.1 Comprehensive Testing
-**Current:** Basic unit tests
+**Current:** Unit/backend coverage + sample CWL E2E suite (Docker/K8s gated)
 **Goal:** 80%+ coverage
 
 **Tasks:**
 - Unit tests for all pure functions
 - Integration tests with real CWL workflows
 - Backend tests with mocked Docker/K8s
-- End-to-end tests in CI
+- Run `e2e` and `heavy_io` marked sample tests in CI pipelines (with environment gating)
 
 #### 5.2 Documentation
 **Current:** README + DESIGN
@@ -182,10 +173,4 @@ def _setup_job(self, job_name, dirs, listings):
 
 ---
 
-### Next Iteration Samples
-
-- Promote `sample_cwl/nbr/` from working subset to documented, runnable sample with a matching runner and usage notes.
-
----
-
-Last updated: February 2026
+Last updated: March 2026

@@ -74,6 +74,30 @@ uv run pytest -q
 - Add integration tests for planner, builder, and backends
 - Mock Docker/K8s backends where possible for reliability
 
+### E2E sample flow tests
+- `tests/test_sample_cwl_e2e.py` is marked with `@pytest.mark.e2e`.
+- Heavy external I/O/network cases are marked with `@pytest.mark.heavy_io`.
+- Run non-E2E suite:
+  ```bash
+  uv run --group dev python -m pytest -q -m "not e2e"
+  ```
+- Run full suite including E2E:
+  ```bash
+  uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+- Enable heavy I/O E2E inputs (remote assets/catalogs):
+  ```bash
+  PREFECT_CWL_E2E_HEAVY_IO=1 uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+  or equivalently:
+  ```bash
+  PREFECT_CWL_E2E_NETWORK=1 uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+- Enable K8s E2E execution:
+  ```bash
+  PREFECT_CWL_E2E_K8S=1 PREFECT_CWL_E2E_HEAVY_IO=1 uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+
 ## Security
 - Do not include secrets in code or tests
 - Report security concerns privately to maintainers

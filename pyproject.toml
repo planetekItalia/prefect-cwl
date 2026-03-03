@@ -55,3 +55,9 @@ members = [
 [tool.towncrier]
 directory = "newsfragments"
 filename = "CHANGELOG.rst"
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests that execute sample CWL flows",
+    "heavy_io: end-to-end tests that require external network/heavy I/O inputs",
+]

@@ -162,6 +162,23 @@ uv run <file_path>
 See `sample_cwl/` for ready-to-run examples you can use to test the library. These are work-in-progress and may evolve as the adapter expands CWL coverage and features.
 This includes `sample_cwl/nbr/`, currently added as a working subset for next-iteration refinement.
 
+## Test selection
+- Sample-flow end-to-end tests are marked with `e2e` (`tests/test_sample_cwl_e2e.py`).
+- Heavy remote I/O/network cases are additionally marked with `heavy_io`.
+- Run default non-E2E tests:
+  ```bash
+  uv run --group dev python -m pytest -q -m "not e2e"
+  ```
+- Run the full suite (unit/integration + e2e):
+  ```bash
+  uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+- Enable heavy I/O e2e cases:
+  ```bash
+  PREFECT_CWL_E2E_HEAVY_IO=1 uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+  (`PREFECT_CWL_E2E_NETWORK=1` is also supported as an alias.)
+
 ## Project status
 Early-stage and evolving. Expect changes in models, supported CWL features, and backend interfaces as we harden the adapter.
 
