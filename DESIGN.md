@@ -195,7 +195,7 @@ class WorkflowTemplate:
 def materialize_step(
     template: StepTemplate,
     workflow_inputs: Dict[str, Any],
-    produced: Dict[Tuple[str, str], Path],
+    produced: Dict[Tuple[str, str], ArtifactPath],
     workspace: Path,
     render_io: RenderIOFn,
 ) -> StepPlan
@@ -207,14 +207,14 @@ def materialize_step(
 3. Build volume mounts (directories containing inputs/outputs)
 4. Render command line and listings via `render_io` callback
 5. Validate listings are under `JOBROOT`
-6. Compute output artifact paths
+6. Compute declared output artifact globs/paths
 7. Return fully materialized `StepPlan`
 
 **Design Rationale:** This function is called **at runtime** by backends, allowing the same template to be materialized with different input values.
 
 ### 4. PrefectFlowBuilder
 
-**File:** `builder.py`
+**File:** `prefect_cwl/flow_builder.py`
 
 **Responsibility:** Convert `WorkflowTemplate` into Prefect flow.
 
@@ -232,6 +232,7 @@ def build(template: WorkflowTemplate, backend: Backend) -> Flow
    - Track `produced` dict (shared mutable state)
    - For each wave:
      - Submit tasks in parallel
+     - If a step declares CWL `scatter`, submit one task run per array item
      - Barrier: wait for all to complete
    - Return workflow outputs
 4. Set function signature for Prefect UI
@@ -239,10 +240,12 @@ def build(template: WorkflowTemplate, backend: Backend) -> Flow
 
 **Shared State Management:**
 
-The `produced: Dict[Tuple[str, str], Path]` dictionary is **shared mutable state** across all tasks:
+The `produced: Dict[Tuple[str, str], ArtifactPath]` dictionary is **shared mutable state** across all tasks:
+
+`ArtifactPath` is `Path | List[Path]`, so a step output can be a single artifact or an ordered list of artifacts.
 
 ```python
-produced[(step_name, output_port)] = host_path
+produced[(step_name, output_port)] = host_path_or_paths
 ```
 
 **Safety:** This is safe because:
@@ -263,7 +266,7 @@ class Backend(ABC):
         self,
         step_template: StepTemplate,
         workflow_inputs: Dict[str, Any],
-        produced: Dict[Tuple[str, str], Path],
+        produced: Dict[Tuple[str, str], ArtifactPath],
         workspace: Path,
     ) -> None:
         pass
@@ -285,14 +288,14 @@ class Backend(ABC):
 async def call_single_step(...):
     # 1. Materialize plan
     step_plan = materialize_step(...)
-    
+
     # 2. Prepare filesystem
     _write_listings(step_plan.listings)
     _ensure_mount_sources(step_plan.volumes)
-    
+
     # 3. Pull image
     await pull_docker_image(step_plan.image)
-    
+
     # 4. Create and start container
     container = await create_docker_container(
         command=step_plan.argv,  # Pass as list!
@@ -300,12 +303,12 @@ async def call_single_step(...):
         environment=step_plan.envs,
         user=f"{uid}:{gid}",  # Host user mapping
     )
-    
+
     # 5. Stream logs concurrently with execution
     log_task = asyncio.create_task(...)
     result = await container.wait()
-    
-    # 6. Track outputs
+
+    # 6. Collect and validate outputs from rendered glob(s), then track outputs
     produced.update(...)
 ```
 
@@ -331,19 +334,19 @@ async def call_single_step(...):
     # 1. Materialize plan
     step_plan = materialize_step(...)
     step = _map_stepplan_to_pvc(step_plan)  # Ensure PVC paths
-    
+
     # 2. Mkdir job - create directories in PVC
     if dirs:
         await run_namespaced_job(_mkdir_job(...))
-    
+
     # 3. Listings job - write InitialWorkDir files
     if step.listings:
         await run_namespaced_job(_listings_job(...))
-    
+
     # 4. Main job - execute tool
     await run_namespaced_job(_step_job(...))
-    
-    # 5. Track outputs
+
+    # 5. Collect and validate outputs from rendered glob(s), then track outputs
     produced.update(...)
 ```
 
@@ -365,6 +368,50 @@ async def call_single_step(...):
 - Job accumulation until TTL expires (set to 1 hour)
 - `subPath` has known limitations (no symlinks, permission issues)
 - Sequential job execution adds overhead (could be optimized by merging mkdir + listings)
+
+**Work Pool Template Merge (K8s Only):**
+- At runtime, spawned CWL step jobs can merge selected Prefect work-pool/deployment `job_variables`
+  when available in `flow_run.job_variables`.
+- Supported merged fields: namespace, service account, environment variables, volumes, volume mounts, image pull secrets.
+- Precedence:
+  - Prefect base job-template defaults (including `variables.properties.*.default`, when available) are the base layer.
+  - Runtime `job_variables` override template defaults.
+  - Local/backend overrides (`PREFECT_CWL_K8S_*`, backend constructor overrides, and optional local `job_variables`) override runtime values.
+  - Local/backend fallback defaults are not forced overrides; they apply only when no higher-priority layer provides a value.
+  - Required `prefect-cwl` PVC binding stays enforced (`pvc_name` + root `pvc_mount_path` mount).
+- Safety constraints:
+  - The required `prefect-cwl` PVC `work` volume and root mount are always enforced.
+  - `pvc_mount_path` is the canonical in-container workspace root where `prefect-cwl` materializes run data.
+  - Step-level env values override runtime/template env on key collision.
+  - If no run context/job variables exist (e.g. local runs), backend defaults are used.
+
+### 8. Step Resource Requirements
+
+**Scope:** Step-level CWL `ResourceRequirement` subset.
+
+**Supported CWL fields (per CommandLineTool):**
+- `coresMin`
+- `coresMax`
+- `ramMin`
+- `ramMax`
+
+**Normalization:**
+- Planner parses `ResourceRequirement` and normalizes it into per-step resource metadata.
+- This metadata is carried in `StepTemplate` and `StepPlan`.
+
+**Executor Mapping:**
+- **Kubernetes backend**
+  - Maps to container `resources.requests` and `resources.limits`
+  - CPU: `coresMin` -> request, `coresMax` -> limit
+  - Memory: `ramMin`/`ramMax` mapped as `Mi`
+- **Docker backend**
+  - Applies hard limits at container create time
+  - CPU: `coresMax` preferred (fallback to `coresMin`) -> `nano_cpus`
+  - Memory: `ramMax` preferred (fallback to `ramMin`) -> `mem_limit`
+
+**Notes:**
+- This is intentionally a partial CWL implementation; dynamic/expression-based resource evaluation is not covered.
+- Tool-level values are interpreted per-step and applied independently for each run (including scattered runs).
 
 ---
 
@@ -414,7 +461,7 @@ For each wave:
     Container writes outputs to host filesystem
     ↓
     Update produced dict:
-      produced[(step_name, port)] = output_path
+      produced[(step_name, port)] = output_path | [output_path, ...]
   ↓
   Barrier: wait for all steps in wave
 ↓
@@ -488,11 +535,11 @@ Return workflow outputs
    - **Impact:** Cannot run arbitrary CWL workflows
    - **Mitigation:** Document supported features clearly
 
-2. **Glob Patterns**
-   - **Limit:** No wildcards, only exact paths
-   - **Rationale:** Simplifies output tracking, no ambiguity
-   - **Impact:** Cannot use `*.txt` patterns
-   - **Mitigation:** Require tools to write to specific filenames
+2. **Output Binding Scope**
+   - **Supported:** Relative output globs, wildcard patterns, and interpolated output bindings
+   - **Limit:** Output globs must stay relative and cannot use absolute paths or `..` traversal
+   - **Impact:** Unsafe/glob-invalid patterns are rejected early
+   - **Mitigation:** Keep output bindings under tool `dockerOutputDirectory` with safe relative globs
 
 3. **Workflow-Level File Inputs**
    - **Limit:** Only primitive types as workflow inputs
@@ -500,11 +547,12 @@ Return workflow outputs
    - **Impact:** Cannot pass files directly to workflow
    - **Mitigation:** Use InitialWorkDirRequirement or mount external volumes
 
-4. **No Scatter/Gather**
-   - **Limit:** No array-based parallelism
-   - **Rationale:** Complex to implement, Prefect has its own patterns
-   - **Impact:** Cannot map steps over arrays
-   - **Mitigation:** Use Prefect's task mapping instead
+4. **Partial Scatter Support**
+   - **Supported:** Single-input `scatter` only (one inport mapped over a list)
+   - **Supported:** Scatter source can come from workflow input arrays or upstream produced list outputs
+   - **Supported:** Gather-like behavior for scattered outputs (ordered list by scatter index)
+   - **Not Supported:** Multi-input scatter / dotproduct / nested cross-product semantics
+   - **Mitigation:** Keep scatter definitions to one array input per step
 
 ### Implementation Constraints (Technical Limits)
 
@@ -518,22 +566,31 @@ Return workflow outputs
    - **Impact:** Large datasets can be slow
    - **Mitigation:** Use fast storage (SSD, local volumes)
 
-3. **No Output Validation**
-   - **Limit:** Doesn't verify outputs exist after execution
-   - **Risk:** Silent failures if tool doesn't create expected outputs
-   - **Mitigation:** Plan to add in future (see Roadmap)
+3. **Scatter Concurrency Controls**
+   - **Limit:** Two controls exist with different scope:
+     - Local executor gate via `PREFECT_CWL_SCATTER_CONCURRENCY`
+     - Prefect orchestration hard limit via tag concurrency
+   - **Impact:** If only local gating is configured, other flows/workers can still consume cluster capacity
+   - **Mitigation:** Configure a Prefect tag limit for `PREFECT_CWL_SCATTER_TAG` to enforce global hard caps
 
-4. **Workspace Cleanup**
+4. **Output Cardinality Validation**
+   - **Behavior:** Runtime collection validates output cardinality by type:
+     - `File` / `Directory`: exactly one match (unless optional `?`)
+     - `File[]` / `Directory[]`: collect all matches in stable sorted order
+   - **Risk:** Overly broad globs can still produce unexpected large output sets
+   - **Mitigation:** Prefer precise globs and explicit output typing
+
+5. **Workspace Cleanup**
    - **Limit:** User must clean up workspace directories
    - **Risk:** Disk space exhaustion
    - **Mitigation:** Document cleanup responsibility, consider TTL
 
-5. **K8s Job Accumulation**
+6. **K8s Job Accumulation**
    - **Limit:** Jobs remain until TTL (default 1 hour)
    - **Impact:** Namespace pollution, potential quota issues
    - **Mitigation:** Set appropriate TTL, clean up old jobs
 
-6. **Docker User Mapping (Windows)**
+7. **Docker User Mapping (Windows)**
    - **Limit:** UID/GID mapping only works on Unix
    - **Risk:** Permission issues on Windows hosts
    - **Mitigation:** Document as Unix-only feature

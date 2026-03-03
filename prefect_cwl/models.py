@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Literal, Optional, Union, Annotated
 
@@ -20,6 +19,7 @@ class DockerRequirement(BaseModel):
 
     dockerPull: str
     dockerOutputDirectory: PurePosixPath = JOBROOT
+    dockerUser: Optional[str] = None
 
     @field_validator("dockerOutputDirectory")
     @classmethod
@@ -74,6 +74,35 @@ class InitialWorkDirRequirement(BaseModel):
     listing: List[Listing] = Field(default_factory=list)
 
 
+class ResourceRequirement(BaseModel):
+    """Subset of CWL ResourceRequirement supported by prefect-cwl."""
+
+    coresMin: Optional[float] = None
+    coresMax: Optional[float] = None
+    ramMin: Optional[int] = None
+    ramMax: Optional[int] = None
+
+    @field_validator("coresMin", "coresMax")
+    @classmethod
+    def cpu_must_be_positive(cls, v: Optional[float]) -> Optional[float]:
+        """Validate that CPU resource values are strictly positive."""
+        if v is None:
+            return None
+        if v <= 0:
+            raise ValueError("CPU values must be > 0")
+        return float(v)
+
+    @field_validator("ramMin", "ramMax")
+    @classmethod
+    def ram_must_be_positive(cls, v: Optional[int]) -> Optional[int]:
+        """Validate that RAM resource values are strictly positive."""
+        if v is None:
+            return None
+        if v <= 0:
+            raise ValueError("RAM values must be > 0")
+        return int(v)
+
+
 class Requirements(BaseModel):
     """CWL Requirements."""
 
@@ -85,6 +114,9 @@ class Requirements(BaseModel):
     )
     initial_workdir_requirement: Optional[InitialWorkDirRequirement] = Field(
         default=InitialWorkDirRequirement(), alias="InitialWorkDirRequirement"
+    )
+    resource_requirement: Optional[ResourceRequirement] = Field(
+        default=None, alias="ResourceRequirement"
     )
 
 
@@ -107,9 +139,6 @@ class ToolInput(BaseModel):
     inputBinding: Optional[InputBinding] = None
 
 
-_GLOB_CHARS = re.compile(r"[*?\[\]{}]")
-
-
 class OutputBinding(BaseModel):
     """Output binding."""
 
@@ -118,7 +147,7 @@ class OutputBinding(BaseModel):
     @field_validator("glob")
     @classmethod
     def must_be_exact_relative_path(cls, v: str) -> str:
-        """Validate that glob is an exact relative path without wildcards or traversal.
+        """Validate that glob is a safe relative path/glob without traversal.
 
         Args:
             v: glob path string
@@ -131,10 +160,6 @@ class OutputBinding(BaseModel):
         # Must be relative (not absolute)
         if v.startswith("/"):
             raise ValueError(f"glob must be a relative path, not absolute: {v!r}")
-
-        # Disallow glob metacharacters
-        if _GLOB_CHARS.search(v) or "**" in v:
-            raise ValueError(f"glob must be an exact path without wildcards: {v!r}")
 
         # Disallow parent traversal - simpler check using Path
         path = PurePosixPath(v)
@@ -179,6 +204,34 @@ class WorkflowStep(BaseModel):
     out: List[str] = Field(default_factory=list)
     definition: Optional[CommandLineToolNode] = None
     volumes: Dict[str, str] = Field(default_factory=dict)
+    scatter: Optional[Union[str, List[str]]] = None
+
+    @field_validator("scatter")
+    @classmethod
+    def scatter_must_be_string_or_list(
+        cls, v: Optional[Union[str, List[str]]]
+    ) -> Optional[Union[str, List[str]]]:
+        """Validate scatter as a non-empty string or list of non-empty strings."""
+        if v is None:
+            return v
+        if isinstance(v, str):
+            vv = v.strip()
+            if not vv:
+                raise ValueError("scatter must be a non-empty string")
+            return vv
+        if isinstance(v, list):
+            if not v:
+                raise ValueError("scatter list must not be empty")
+            out: List[str] = []
+            for item in v:
+                if not isinstance(item, str):
+                    raise ValueError("scatter list items must be strings")
+                item = item.strip()
+                if not item:
+                    raise ValueError("scatter list items must be non-empty strings")
+                out.append(item)
+            return out
+        raise ValueError("scatter must be a string or list of strings")
 
 
 # ---------------- Graph nodes ----------------

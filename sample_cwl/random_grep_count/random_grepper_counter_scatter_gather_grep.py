@@ -1,0 +1,18 @@
+import asyncio
+import random
+import string
+from pathlib import Path
+from prefect_cwl import create_flow_with_k8s_backend
+
+inputs = {
+    "random_string_number": 100,
+    "grep_string": ["==", "cde"],
+}
+
+random_string = "".join(random.choice(string.ascii_letters) for _ in range(10))
+with open(Path(__file__).parent / "random_grep_count_scatter_gather_grep.cwl") as inp:
+    runnable_flow = create_flow_with_k8s_backend(
+        inp.read(), Path(f"/data/{random_string}"), workflow_id="#random_grep_count"
+    )
+
+asyncio.run(runnable_flow(**inputs))

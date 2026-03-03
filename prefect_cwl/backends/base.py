@@ -1,8 +1,10 @@
 """Base interface for running single CWL steps under Prefect."""
+
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from prefect_cwl.planner.templates import StepTemplate
+from prefect_cwl.planner.templates import ArtifactPath
 
 
 class Backend:
@@ -12,8 +14,10 @@ class Backend:
         self,
         step_template: StepTemplate,
         workflow_inputs: Dict[str, Any],
-        produced: Dict[Tuple[str, str], Path],
+        produced: Dict[Tuple[str, str], ArtifactPath],
         workspace: Path,
+        job_suffix: Optional[str] = None,
+        input_overrides: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Materialize and execute a single step.
 

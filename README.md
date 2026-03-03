@@ -4,17 +4,17 @@
   # Prefect CWL
 </div>
 
-A lightweight adapter that bridges the *Common Workflow Language* (CWL) world with *Prefect*. 
-It not only executes CWL but lets you orchestrate it with Prefect’s scheduling, retries, observability, and deployments (this a WIP, actually). 
-Execution is pluggable via backends, starting with Docker and with Kubernetes as a forthcoming option.
+A lightweight adapter that bridges the *Common Workflow Language* (CWL) world with *Prefect*.
+It not only executes CWL but lets you orchestrate it with Prefect’s scheduling, retries, observability, and deployments.
+Execution is pluggable via backends, with both Docker and Kubernetes available.
 
-In this library, the atomic unit is a single CWL step (a `CommandLineTool` or workflow step), not an entire workflow/flow. 
+In this library, the atomic unit is a single CWL step (a `CommandLineTool` or workflow step), not an entire workflow/flow.
 Prefect orchestrates those steps according to the CWL-defined dependencies.
 
 ## What this achieves
 - **Bridge CWL and Prefect**: Parse CWL, build a dependency graph, and run steps under Prefect orchestration.
 - **Orchestrate, not just execute**: Use Prefect’s UI, scheduling, retries, mapping, and deployments to operate CWL workloads.
-- **Pluggable execution backends**: Run each CWL step via Docker today; Kubernetes support is planned.
+- **Pluggable execution backends**: Run each CWL step via Docker or Kubernetes.
 
 ## Key concepts
 - **Atomic unit = CWL step**: Each CWL step is executed as a Prefect task invocation via a backend. Prefect orchestrates the order and parallelism.
@@ -30,17 +30,25 @@ Prefect orchestrates those steps according to the CWL-defined dependencies.
 
 ## Current limitations
 
-- The adapter needs the explicit *WRK_DIR* env variable, set up a *current working directory* when running Docker container/K8s Job
-- No glob supported, aside from simple *folder names*
-- Data among steps shall be passed with directory. Each step shall then read the previous output saved somehow to those files
-- Names for steps and input/output reference shall be the same
+- The adapter needs explicit working directory setup (`WRK_DIR` or backend-specific mount roots).
+- This is still a pragmatic CWL subset, not full conformance.
+- Scatter support is partial: single-input scatter is supported; multi-input dotproduct/crossproduct is not.
+- Data exchange between steps is filesystem-based (host paths/PVC), not in-memory streaming.
 A more in-depth list can be checked out inside the *DESIGN* file.
 
 Check *sample_cwl* folder for those limits in practice.
 
 ## Backends
 - **Docker backend**: Uses Prefect’s Docker primitives to pull images, mount volumes, and execute commands.
-- **Kubernetes backend (WIP)**: Same interface; schedule Pods/Jobs to run each CWL step.
+- **Kubernetes backend**: Same interface; schedules Jobs to run each CWL step.
+
+## Output collection behavior
+
+- Output `glob` values are resolved at runtime (including wildcard patterns and interpolated values).
+- Relative globs are required; absolute paths and `..` traversal are rejected.
+- Scalar outputs (`File` / `Directory`) must match exactly one artifact unless optional (`?`).
+- Array outputs (`File[]` / `Directory[]`) collect all matches in stable sorted order.
+- Collected artifacts are propagated to downstream steps as `Path` or `List[Path]` values.
 
 ## Quick start
 
@@ -83,15 +91,48 @@ Shall you want to use *K8s* backend, special requirements apply:
 
 - a running K8s cluster
 - a PVC installed and deployed and usable by Prefect
-- the following environment env vars set, if needed: 
+- the following environment env vars set, if needed:
   - `KUBECONFIG`, for custom configuration
   - `PREFECT_CWL_K8S_NAMESPACE`, for custom namespace (default: `prefect`)
   - `PREFECT_CWL_K8S_PVC_NAME`, for custom PVC name (default: `prefect-shared-pvc`)
   - `PREFECT_CWL_K8S_PVC_MOUNT_PATH`, for custom PVC mount path (default: `/data`)
   - `PREFECT_CWL_K8S_SERVICE_ACCOUNT_NAME`, for custom service account name (default: `prefect-flow-runner`)
   - `PREFECT_CWL_K8S_PULL_SECRETS`, for custom pull secrets (default: `[]`)
+  - `PREFECT_CWL_K8S_LOG_LEVEL`, for step summary log level (default: `INFO`)
+  - `PREFECT_CWL_K8S_STREAM_LOG_LEVEL`, for streamed job output log level (default: `DEBUG`)
+
+K8s precedence note (deployed runs):
+- Merge order for supported keys is:
+  - Prefect base job-template defaults (including `variables.properties.*.default`, when a template is available)
+  - runtime `flow_run.job_variables`
+  - local/backend overrides (constructor args, `PREFECT_CWL_K8S_*`, and optional `job_variables` passed to `K8sBackend`)
+- Important: local/backend explicit overrides always win when present; fallback defaults are used only when a value is not provided by template/runtime/explicit override.
+- Supported merged fields include:
+  - `namespace`, `service_account_name`, `env`, `volumes`, `volume_mounts`/`volumeMounts`, `image_pull_secrets`, `labels`, `finished_job_ttl`, `image_pull_policy`
+- `PREFECT_CWL_K8S_PVC_NAME` and `PREFECT_CWL_K8S_PVC_MOUNT_PATH` are always enforced by `prefect-cwl` for its required work volume/mount.
+- `PREFECT_CWL_K8S_PVC_MOUNT_PATH` is the authoritative in-container root used by `prefect-cwl` to create per-run data directories in the shared PVC.
+- For deployed runs, you can control `prefect-cwl` log verbosity at deployment level by setting those env vars in worker/work-pool `job_variables.env`.
 
 For running a local K8s cluster, configured with Prefect and all the above requirements, check the *prefect-k8s-demo* folder.
+
+## Runtime concurrency controls
+
+`prefect-cwl` supports CWL scatter with runtime guardrails:
+
+- `PREFECT_CWL_SCATTER_CONCURRENCY` (default: `4`): local in-flow throttling for submitted scattered runs. Set `0` or negative to disable this local gate.
+- `PREFECT_CWL_SCATTER_TAG` (default: `prefect-cwl-scatter`): Prefect tag attached to `run_step` task submissions. Set to empty to disable tag attachment.
+
+To enforce a hard orchestration limit, create a Prefect concurrency limit on that tag:
+
+```bash
+prefect concurrency-limit create prefect-cwl-scatter 8
+prefect concurrency-limit inspect prefect-cwl-scatter
+```
+
+Notes:
+- The Prefect tag limit is the hard control across workers/flows using the same API/server.
+- The local `PREFECT_CWL_SCATTER_CONCURRENCY` gate is process-local and complements (does not replace) Prefect tag limits.
+- With current implementation, `PREFECT_CWL_SCATTER_TAG` is applied to all `run_step` task submissions, including non-scattered runs.
 
 ## Install the library locally
 
@@ -101,8 +142,8 @@ Prerequisite: install `uv` (https://github.com/astral-sh/uv). Once `uv` has been
 uv sync --all-extras --group dev
 ```
 
-Be sure to set the *PYTHONPATH* variable to *prefect_cwl* directory. 
-Alternatively, use the command `echo PYTHONPATH=$PWD`, to set the path pointing to the current folder. 
+Be sure to set the *PYTHONPATH* variable to *prefect_cwl* directory.
+Alternatively, use the command `echo PYTHONPATH=$PWD`, to set the path pointing to the current folder.
 Otherwise, install it into *editable* mode. Should you run tests, install *dev* dependencies.
 
 Start the Prefect server using the command:
@@ -119,6 +160,24 @@ uv run <file_path>
 
 ## Sample CWL (WIP)
 See `sample_cwl/` for ready-to-run examples you can use to test the library. These are work-in-progress and may evolve as the adapter expands CWL coverage and features.
+This includes `sample_cwl/nbr/`, currently added as a working subset for next-iteration refinement.
+
+## Test selection
+- Sample-flow end-to-end tests are marked with `e2e` (`tests/test_sample_cwl_e2e.py`).
+- Heavy remote I/O/network cases are additionally marked with `heavy_io`.
+- Run default non-E2E tests:
+  ```bash
+  uv run --group dev python -m pytest -q -m "not e2e"
+  ```
+- Run the full suite (unit/integration + e2e):
+  ```bash
+  uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+- Enable heavy I/O e2e cases:
+  ```bash
+  PREFECT_CWL_E2E_HEAVY_IO=1 uv run --group dev python -m pytest -q -m "e2e or not e2e"
+  ```
+  (`PREFECT_CWL_E2E_NETWORK=1` is also supported as an alias.)
 
 ## Project status
 Early-stage and evolving. Expect changes in models, supported CWL features, and backend interfaces as we harden the adapter.

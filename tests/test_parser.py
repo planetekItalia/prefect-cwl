@@ -53,11 +53,9 @@ def test_docker_output_directory_must_be_absolute_raises_custom_error():
 @pytest.mark.parametrize(
     "glob",
     [
-        "/absolute.txt",     # absolute not allowed
-        "data/*.txt",        # wildcard not allowed
-        "**/deep/file.txt",  # double-star not allowed
-        "../escape.txt",     # parent traversal not allowed
-        "",                   # empty not allowed
+        "/absolute.txt",  # absolute not allowed
+        "../escape.txt",  # parent traversal not allowed
+        "",  # empty not allowed
     ],
 )
 def test_output_binding_glob_validation_errors(glob):
@@ -68,6 +66,14 @@ def test_output_binding_glob_validation_errors(glob):
         )
     # Spot-check message mentions "glob" and the reason
     assert "glob" in str(ei.value)
+
+
+def test_output_binding_glob_accepts_wildcards_when_relative():
+    out = ToolOutput(
+        type="File[]",
+        outputBinding=OutputBinding(glob="data/*.txt"),
+    )
+    assert out.outputBinding.glob == "data/*.txt"
 
 
 def test_listing_entryname_must_be_under_jobroot():
@@ -95,6 +101,26 @@ def test_workflow_step_fragment_mismatch_raises_custom_error():
     assert "steps.download.run must be '#download'" in str(ei.value)
 
 
+def test_workflow_step_scatter_accepts_list_of_inputs():
+    wf = WorkflowNode(
+        **{
+            "class": "Workflow",
+            "id": "wf",
+            "inputs": {},
+            "outputs": {},
+            "steps": {
+                "s": {
+                    "run": "#s",
+                    "in": {"a": "x", "b": "y"},
+                    "out": [],
+                    "scatter": ["a", "b"],
+                },
+            },
+        }
+    )
+    assert wf.steps["s"].scatter == ["a", "b"]
+
+
 def test_successful_cwl_document_marshalling():
     # Positive control: build a minimal but valid CWL document graph
     clt = {
@@ -105,9 +131,9 @@ def test_successful_cwl_document_marshalling():
                 "dockerPull": "alpine:3",
                 "dockerOutputDirectory": "/cwl_job/out",
             },
-            "InitialWorkDirRequirement": {"listing": [
-                {"entryname": "/cwl_job/msg.txt", "entry": "hello"}
-            ]},
+            "InitialWorkDirRequirement": {
+                "listing": [{"entryname": "/cwl_job/msg.txt", "entry": "hello"}]
+            },
         },
         "baseCommand": ["echo"],
         "arguments": [],
@@ -117,9 +143,7 @@ def test_successful_cwl_document_marshalling():
                 "inputBinding": {"prefix": "--msg", "position": 1},
             }
         },
-        "outputs": {
-            "o": {"type": "File", "outputBinding": {"glob": "msg.txt"}}
-        },
+        "outputs": {"o": {"type": "File", "outputBinding": {"glob": "msg.txt"}}},
     }
 
     doc = CWLDocument(
@@ -135,3 +159,24 @@ def test_successful_cwl_document_marshalling():
     # Discriminator should produce a CommandLineToolNode instance
     assert isinstance(node, CommandLineToolNode)
     assert node.id == "echo"
+
+
+def test_resource_requirement_subset_is_parsed():
+    req = minimal_requirements(
+        ResourceRequirement={
+            "coresMin": 1,
+            "coresMax": 2,
+            "ramMin": 512,
+            "ramMax": 1024,
+        }
+    )
+    assert req.resource_requirement is not None
+    assert req.resource_requirement.coresMin == 1.0
+    assert req.resource_requirement.coresMax == 2.0
+    assert req.resource_requirement.ramMin == 512
+    assert req.resource_requirement.ramMax == 1024
+
+
+def test_resource_requirement_negative_values_raise():
+    with pytest.raises(ValueError):
+        minimal_requirements(ResourceRequirement={"coresMin": -1})
